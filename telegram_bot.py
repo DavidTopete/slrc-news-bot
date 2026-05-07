@@ -27,20 +27,12 @@ FUENTES = [
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # ========================
-# DEBUG
-# ========================
-def debug_env():
-    print("TOKEN existe:", TOKEN is not None)
-    print("CHAT_ID existe:", CHAT_ID is not None)
-
-
-# ========================
 # UTILIDADES
 # ========================
 def limpiar_texto(texto):
     texto = texto.lower()
-    texto = texto.replace("á", "a").replace("é", "e").replace("í", "i")
-    texto = texto.replace("ó", "o").replace("ú", "u").replace("ñ", "n")
+    texto = texto.replace("á","a").replace("é","e").replace("í","i")
+    texto = texto.replace("ó","o").replace("ú","u").replace("ñ","n")
     texto = re.sub(r"[^a-z0-9\s]", " ", texto)
     texto = re.sub(r"\s+", " ", texto).strip()
     return texto
@@ -50,12 +42,12 @@ def es_noticia_slrc(titulo, link):
     texto = limpiar_texto(titulo + " " + link)
 
     claves = [
-        "san luis rio colorado", "slrc", "san luis sonora",
-        "san luis rc", "san luis r c",
-        "garita", "aduana", "frontera",
-        "valle de san luis", "riito", "sonoyta",
-        "golfo de santa clara", "luis b sanchez",
-        "colonia", "ejido", "ayuntamiento", "policia"
+        "san luis rio colorado","slrc","san luis sonora",
+        "san luis rc","san luis r c",
+        "garita","aduana","frontera",
+        "valle de san luis","riito","sonoyta",
+        "golfo de santa clara","luis b sanchez",
+        "colonia","ejido","ayuntamiento","policia"
     ]
 
     return any(c in texto for c in claves)
@@ -68,7 +60,6 @@ def titulo_parecido(t1, t2):
 def cargar_enviadas():
     if not os.path.exists(ARCHIVO_ENVIADAS):
         return {"links": [], "titulos": []}
-
     with open(ARCHIVO_ENVIADAS, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -78,6 +69,7 @@ def guardar_enviada(noticia):
     data["links"].append(noticia["link"])
     data["titulos"].append(noticia["titulo"])
 
+    # limitar tamaño
     data["links"] = data["links"][-300:]
     data["titulos"] = data["titulos"][-300:]
 
@@ -144,18 +136,14 @@ def obtener_noticias():
 
 def eliminar_duplicados(lista):
     unicas = []
-
     for n in lista:
         repetida = False
-
         for u in unicas:
             if n["link"] == u["link"] or titulo_parecido(n["titulo"], u["titulo"]):
                 repetida = True
                 break
-
         if not repetida:
             unicas.append(n)
-
     return unicas
 
 
@@ -171,14 +159,11 @@ def enviar_encabezado():
 *Cobertura: últimas 24 horas*
 """
 
-    response = requests.post(url, data={
+    requests.post(url, data={
         "chat_id": CHAT_ID,
         "text": mensaje,
         "parse_mode": "Markdown"
     })
-
-    print("HEADER STATUS:", response.status_code)
-    print("HEADER RESPONSE:", response.text)
 
 
 def enviar_noticia(noticia, i):
@@ -196,9 +181,6 @@ Link: {noticia['link']}
         "text": mensaje
     })
 
-    print("STATUS:", response.status_code)
-    print("RESPONSE:", response.text)
-
     if response.status_code == 200:
         guardar_enviada(noticia)
 
@@ -207,8 +189,6 @@ Link: {noticia['link']}
 # MAIN
 # ========================
 def main():
-    debug_env()
-
     print("Buscando noticias...")
     noticias = obtener_noticias()
 
@@ -222,8 +202,6 @@ def main():
                 noticias_a_enviar.append(n)
             if len(noticias_a_enviar) == 10:
                 break
-
-    print(f"Enviando {len(noticias_a_enviar)} noticias...")
 
     enviar_encabezado()
     time.sleep(3)
