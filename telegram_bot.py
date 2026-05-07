@@ -10,8 +10,8 @@ from difflib import SequenceMatcher
 # ========================
 # CONFIGURACIÓN
 # ========================
-TOKEN = "8748970943:AAGjGO6WealdviouNhWM1HWjc_VCrMcFQIU"
-CHAT_ID = "-1003809114834"
+TOKEN = os.getenv("TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 ARCHIVO_ENVIADAS = "noticias_enviadas.json"
 
