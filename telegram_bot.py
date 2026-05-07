@@ -6,6 +6,7 @@ import json
 import os
 import re
 from difflib import SequenceMatcher
+from zoneinfo import ZoneInfo
 
 # ========================
 # CONFIG
@@ -14,6 +15,8 @@ TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 ARCHIVO_ENVIADAS = "noticias_enviadas.json"
+
+TZ = ZoneInfo("America/Hermosillo")
 
 FUENTES = [
     {"nombre": "Tribuna Inicio", "url": "https://oem.com.mx/tribunadesanluis/"},
@@ -29,6 +32,10 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 # ========================
 # UTILIDADES
 # ========================
+def ahora_local():
+    return datetime.now(TZ)
+
+
 def limpiar_texto(texto):
     texto = texto.lower()
     texto = texto.replace("á","a").replace("é","e").replace("í","i")
@@ -149,17 +156,13 @@ def eliminar_duplicados(lista):
 # ========================
 # TELEGRAM
 # ========================
-def hora_actual():
-    return datetime.now().strftime("%H:%M")
-
-
 def enviar_encabezado():
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    ahora = datetime.now()
+    ahora = ahora_local()
 
     mensaje = f"""*SAN LUIS RIO COLORADO NOTICIAS*
 *Fecha: {ahora.strftime("%d/%m/%Y")}*
-*Hora: {hora_actual()}*
+*Hora: {ahora.strftime("%H:%M")}*
 *Cobertura: últimas 24 horas*
 """
 
@@ -173,11 +176,7 @@ def enviar_encabezado():
 def enviar_noticia(noticia, i):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-    ahora = datetime.now()
-
     mensaje = f"""{i}. {noticia['titulo']}
-Fecha: {ahora.strftime("%d/%m/%Y")}
-Hora: {hora_actual()}
 Fuente: {noticia['fuente']}
 Link: {noticia['link']}
 """
