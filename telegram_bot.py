@@ -8,7 +8,7 @@ import re
 from difflib import SequenceMatcher
 
 # ========================
-# CONFIG
+# CONFIG (desde GitHub Secrets)
 # ========================
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -25,6 +25,24 @@ FUENTES = [
 ]
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
+
+# ========================
+# DEBUG (CLAVE)
+# ========================
+def debug_env():
+    print("TOKEN existe:", TOKEN is not None)
+    print("CHAT_ID existe:", CHAT_ID is not None)
+
+    if TOKEN:
+        print("TOKEN inicio:", TOKEN[:10])
+    else:
+        print("NO TOKEN")
+
+    if CHAT_ID:
+        print("CHAT_ID:", CHAT_ID)
+    else:
+        print("NO CHAT_ID")
+
 
 # ========================
 # UTILIDADES
@@ -67,9 +85,7 @@ def cargar_enviadas():
 def guardar_enviada(noticia):
     data = cargar_enviadas()
     data["links"].append(noticia["link"])
-    data["titulos"].append(noticia["titulo"]
-
-    )
+    data["titulos"].append(noticia["titulo"])
 
     data["links"] = data["links"][-300:]
     data["titulos"] = data["titulos"][-300:]
@@ -181,37 +197,19 @@ Link: {noticia['link']}
 # MAIN
 # ========================
 def main():
+    debug_env()
+
     print("Buscando noticias...")
     noticias = obtener_noticias()
 
     nuevas = [n for n in noticias if not ya_fue_enviada(n)]
 
-    noticias_a_enviar = []
-    fuentes_usadas = set()
+    noticias_a_enviar = nuevas[:10]
 
-    # 1. Una por fuente
-    for n in nuevas:
-        if n["fuente"] not in fuentes_usadas:
-            noticias_a_enviar.append(n)
-            fuentes_usadas.add(n["fuente"])
-
-        if len(noticias_a_enviar) == 10:
-            break
-
-    # 2. Completar con nuevas
-    for n in nuevas:
-        if n not in noticias_a_enviar:
-            noticias_a_enviar.append(n)
-
-        if len(noticias_a_enviar) == 10:
-            break
-
-    # 3. Completar si faltan
     if len(noticias_a_enviar) < 10:
         for n in noticias:
             if n not in noticias_a_enviar:
                 noticias_a_enviar.append(n)
-
             if len(noticias_a_enviar) == 10:
                 break
 
