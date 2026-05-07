@@ -8,7 +8,7 @@ import re
 from difflib import SequenceMatcher
 
 # ========================
-# CONFIGURACIÓN
+# CONFIG
 # ========================
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -41,18 +41,16 @@ def limpiar_texto(texto):
 def es_noticia_slrc(titulo, link):
     texto = limpiar_texto(titulo + " " + link)
 
-    claves_fuertes = [
+    claves = [
         "san luis rio colorado","slrc","san luis sonora",
-        "san luis rc","san luis r c"
+        "san luis rc","san luis r c",
+        "garita","aduana","frontera",
+        "valle de san luis","riito","sonoyta",
+        "golfo de santa clara","luis b sanchez",
+        "colonia","ejido","ayuntamiento","policia"
     ]
 
-    claves_contexto = [
-        "garita","aduana","frontera","valle de san luis",
-        "riito","sonoyta","golfo de santa clara",
-        "luis b sanchez","colonia","ejido","ayuntamiento","policia"
-    ]
-
-    return any(c in texto for c in claves_fuertes + claves_contexto)
+    return any(c in texto for c in claves)
 
 
 def titulo_parecido(t1, t2):
@@ -69,20 +67,27 @@ def cargar_enviadas():
 def guardar_enviada(noticia):
     data = cargar_enviadas()
     data["links"].append(noticia["link"])
-    data["titulos"].append(noticia["titulo"])
+    data["titulos"].append(noticia["titulo"]
+
+    )
+
     data["links"] = data["links"][-300:]
     data["titulos"] = data["titulos"][-300:]
+
     with open(ARCHIVO_ENVIADAS, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
 def ya_fue_enviada(noticia):
     data = cargar_enviadas()
+
     if noticia["link"] in data["links"]:
         return True
+
     for t in data["titulos"]:
         if titulo_parecido(noticia["titulo"], t):
             return True
+
     return False
 
 
@@ -95,6 +100,7 @@ def obtener_noticias():
     for fuente in FUENTES:
         try:
             print(f"Leyendo: {fuente['nombre']}")
+
             r = requests.get(fuente["url"], headers=HEADERS, timeout=10)
             soup = BeautifulSoup(r.text, "html.parser")
 
@@ -124,21 +130,25 @@ def obtener_noticias():
                 })
 
         except Exception as e:
-            print("Error:", e)
+            print(f"Error en {fuente['nombre']}: {e}")
 
     return eliminar_duplicados(noticias)
 
 
 def eliminar_duplicados(lista):
     unicas = []
+
     for n in lista:
         repetida = False
+
         for u in unicas:
             if n["link"] == u["link"] or titulo_parecido(n["titulo"], u["titulo"]):
                 repetida = True
                 break
+
         if not repetida:
             unicas.append(n)
+
     return unicas
 
 
@@ -155,12 +165,16 @@ Fuente: {noticia['fuente']}
 Link: {noticia['link']}
 """
 
-    requests.post(url, data={
+    response = requests.post(url, data={
         "chat_id": CHAT_ID,
         "text": mensaje
     })
 
-    guardar_enviada(noticia)
+    print("STATUS:", response.status_code)
+    print("RESPONSE:", response.text)
+
+    if response.status_code == 200:
+        guardar_enviada(noticia)
 
 
 # ========================
@@ -172,13 +186,32 @@ def main():
 
     nuevas = [n for n in noticias if not ya_fue_enviada(n)]
 
-    noticias_a_enviar = nuevas[:10]
+    noticias_a_enviar = []
+    fuentes_usadas = set()
 
-    # Completar hasta 10 si faltan
+    # 1. Una por fuente
+    for n in nuevas:
+        if n["fuente"] not in fuentes_usadas:
+            noticias_a_enviar.append(n)
+            fuentes_usadas.add(n["fuente"])
+
+        if len(noticias_a_enviar) == 10:
+            break
+
+    # 2. Completar con nuevas
+    for n in nuevas:
+        if n not in noticias_a_enviar:
+            noticias_a_enviar.append(n)
+
+        if len(noticias_a_enviar) == 10:
+            break
+
+    # 3. Completar si faltan
     if len(noticias_a_enviar) < 10:
         for n in noticias:
             if n not in noticias_a_enviar:
                 noticias_a_enviar.append(n)
+
             if len(noticias_a_enviar) == 10:
                 break
 
