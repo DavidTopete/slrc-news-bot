@@ -149,16 +149,17 @@ def eliminar_duplicados(lista):
 # ========================
 # TELEGRAM
 # ========================
+def hora_actual():
+    return datetime.now().strftime("%H:%M")
+
+
 def enviar_encabezado():
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-
     ahora = datetime.now()
-    fecha = ahora.strftime("%d/%m/%Y")
-    hora = ahora.strftime("%H:%M")
 
     mensaje = f"""*SAN LUIS RIO COLORADO NOTICIAS*
-*Fecha: {fecha}*
-*Hora: {hora}*
+*Fecha: {ahora.strftime("%d/%m/%Y")}*
+*Hora: {hora_actual()}*
 *Cobertura: últimas 24 horas*
 """
 
@@ -171,10 +172,12 @@ def enviar_encabezado():
 
 def enviar_noticia(noticia, i):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    fecha = datetime.now().strftime("%d/%m/%Y")
+
+    ahora = datetime.now()
 
     mensaje = f"""{i}. {noticia['titulo']}
-Fecha: {fecha}
+Fecha: {ahora.strftime("%d/%m/%Y")}
+Hora: {hora_actual()}
 Fuente: {noticia['fuente']}
 Link: {noticia['link']}
 """
