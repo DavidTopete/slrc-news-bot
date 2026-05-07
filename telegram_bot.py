@@ -226,6 +226,7 @@ def main():
     print(f"Enviando {len(noticias_a_enviar)} noticias...")
 
     enviar_encabezado()
+    time.sleep(3)
 
     for i, n in enumerate(noticias_a_enviar, 1):
         enviar_noticia(n, i)
