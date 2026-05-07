@@ -69,7 +69,6 @@ def guardar_enviada(noticia):
     data["links"].append(noticia["link"])
     data["titulos"].append(noticia["titulo"])
 
-    # limitar tamaño
     data["links"] = data["links"][-300:]
     data["titulos"] = data["titulos"][-300:]
 
@@ -152,10 +151,14 @@ def eliminar_duplicados(lista):
 # ========================
 def enviar_encabezado():
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    fecha = datetime.now().strftime("%d/%m/%Y")
+
+    ahora = datetime.now()
+    fecha = ahora.strftime("%d/%m/%Y")
+    hora = ahora.strftime("%H:%M")
 
     mensaje = f"""*SAN LUIS RIO COLORADO NOTICIAS*
 *Fecha: {fecha}*
+*Hora: {hora}*
 *Cobertura: últimas 24 horas*
 """
 
