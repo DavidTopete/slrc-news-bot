@@ -36,6 +36,13 @@ def ahora_local():
     return datetime.now(TZ)
 
 
+def escapar_markdown(texto):
+    caracteres = r"_*[]()~`>#+-=|{}.!"
+    for c in caracteres:
+        texto = texto.replace(c, f"\\{c}")
+    return texto
+
+
 def limpiar_texto(texto):
     texto = texto.lower()
     texto = texto.replace("á", "a").replace("é", "e").replace("í", "i")
@@ -61,7 +68,11 @@ def es_noticia_slrc(titulo, link):
 
 
 def titulo_parecido(t1, t2):
-    return SequenceMatcher(None, limpiar_texto(t1), limpiar_texto(t2)).ratio() >= 0.80
+    return SequenceMatcher(
+        None,
+        limpiar_texto(t1),
+        limpiar_texto(t2)
+    ).ratio() >= 0.80
 
 
 def cargar_enviadas():
@@ -97,10 +108,8 @@ def ya_fue_enviada(noticia):
     if noticia["link"] in data["links"]:
         return True
 
-    titulo_actual = noticia["titulo"]
-
     for titulo_guardado in data["titulos"]:
-        if titulo_parecido(titulo_actual, titulo_guardado):
+        if titulo_parecido(noticia["titulo"], titulo_guardado):
             return True
 
     return False
@@ -118,12 +127,18 @@ def obtener_noticias():
         try:
             print(f"Leyendo: {fuente['nombre']}")
 
-            r = requests.get(fuente["url"], headers=HEADERS, timeout=10)
+            r = requests.get(
+                fuente["url"],
+                headers=HEADERS,
+                timeout=10
+            )
+
             soup = BeautifulSoup(r.text, "html.parser")
 
             links = soup.find_all("a", href=True)
 
             for item in links:
+
                 titulo = item.get_text(" ", strip=True)
                 href = item["href"]
 
@@ -131,7 +146,11 @@ def obtener_noticias():
                     continue
 
                 if href.startswith("/"):
-                    base = fuente["url"].split("/")[0] + "//" + fuente["url"].split("/")[2]
+                    base = (
+                        fuente["url"].split("/")[0]
+                        + "//"
+                        + fuente["url"].split("/")[2]
+                    )
                     href = base + href
 
                 if not href.startswith("http"):
@@ -140,21 +159,27 @@ def obtener_noticias():
                 if not es_noticia_slrc(titulo, href):
                     continue
 
-                # Evitar repetidos por link
+                # ========================
+                # EVITAR REPETIDOS
+                # ========================
+
                 if href in data_enviadas["links"]:
-                    print(f"REPETIDA POR LINK: {titulo}")
+                    print(f"REPETIDA LINK: {titulo}")
                     continue
 
-                # Evitar repetidos por título
                 repetida = False
 
                 for titulo_guardado in data_enviadas["titulos"]:
-                    if titulo_parecido(titulo, titulo_guardado):
+
+                    if titulo_parecido(
+                        titulo,
+                        titulo_guardado
+                    ):
                         repetida = True
                         break
 
                 if repetida:
-                    print(f"REPETIDA POR TITULO: {titulo}")
+                    print(f"REPETIDA TITULO: {titulo}")
                     continue
 
                 noticia = {
@@ -172,17 +197,23 @@ def obtener_noticias():
 
 
 def eliminar_duplicados(lista):
+
     unicas = []
 
     for noticia in lista:
+
         repetida = False
 
         for existente in unicas:
+
             if noticia["link"] == existente["link"]:
                 repetida = True
                 break
 
-            if titulo_parecido(noticia["titulo"], existente["titulo"]):
+            if titulo_parecido(
+                noticia["titulo"],
+                existente["titulo"]
+            ):
                 repetida = True
                 break
 
@@ -196,6 +227,7 @@ def eliminar_duplicados(lista):
 # TELEGRAM
 # ========================
 def enviar_encabezado():
+
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
     ahora = ahora_local()
@@ -209,35 +241,44 @@ def enviar_encabezado():
     requests.post(url, data={
         "chat_id": CHAT_ID,
         "text": mensaje,
-        "parse_mode": "Markdown"
+        "parse_mode": "MarkdownV2"
     })
 
 
 def enviar_noticia(noticia, i):
+
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-    mensaje = f"""*{i}. {noticia['titulo']}*
-Fuente: {noticia['fuente']}
-Link: {noticia['link']}
-"""
+    titulo = escapar_markdown(noticia["titulo"])
+    fuente = escapar_markdown(noticia["fuente"])
+    link = escapar_markdown(noticia["link"])
+
+    mensaje = (
+        f"*{i}\\. {titulo}*\n"
+        f"Fuente: {fuente}\n"
+        f"Link: {link}"
+    )
 
     response = requests.post(url, data={
         "chat_id": CHAT_ID,
         "text": mensaje,
-        "parse_mode": "Markdown"
+        "parse_mode": "MarkdownV2",
+        "disable_web_page_preview": False
     })
 
     if response.status_code == 200:
         guardar_enviada(noticia)
         print(f"Enviada: {noticia['titulo']}")
     else:
-        print("Error enviando:", response.text)
+        print("ERROR TELEGRAM:")
+        print(response.text)
 
 
 # ========================
 # MAIN
 # ========================
 def main():
+
     print("Buscando noticias...")
 
     noticias = obtener_noticias()
@@ -245,20 +286,24 @@ def main():
     noticias_nuevas = []
 
     for noticia in noticias:
+
         if not ya_fue_enviada(noticia):
             noticias_nuevas.append(noticia)
 
     noticias_a_enviar = noticias_nuevas[:10]
 
     if not noticias_a_enviar:
-        print("No hay noticias nuevas. No se enviará nada.")
+        print("No hay noticias nuevas.")
         return
 
     enviar_encabezado()
+
     time.sleep(3)
 
     for i, noticia in enumerate(noticias_a_enviar, 1):
+
         enviar_noticia(noticia, i)
+
         time.sleep(1)
 
 
