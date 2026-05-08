@@ -38,8 +38,8 @@ def ahora_local():
 
 def limpiar_texto(texto):
     texto = texto.lower()
-    texto = texto.replace("á","a").replace("é","e").replace("í","i")
-    texto = texto.replace("ó","o").replace("ú","u").replace("ñ","n")
+    texto = texto.replace("á", "a").replace("é", "e").replace("í", "i")
+    texto = texto.replace("ó", "o").replace("ú", "u").replace("ñ", "n")
     texto = re.sub(r"[^a-z0-9\s]", " ", texto)
     texto = re.sub(r"\s+", " ", texto).strip()
     return texto
@@ -49,32 +49,40 @@ def es_noticia_slrc(titulo, link):
     texto = limpiar_texto(titulo + " " + link)
 
     claves = [
-        "san luis rio colorado","slrc","san luis sonora",
-        "san luis rc","san luis r c",
-        "garita","aduana","frontera",
-        "valle de san luis","riito","sonoyta",
-        "golfo de santa clara","luis b sanchez",
-        "colonia","ejido","ayuntamiento","policia"
+        "san luis rio colorado", "slrc", "san luis sonora",
+        "san luis rc", "san luis r c",
+        "garita", "aduana", "frontera",
+        "valle de san luis", "riito", "sonoyta",
+        "golfo de santa clara", "luis b sanchez",
+        "colonia", "ejido", "ayuntamiento", "policia"
     ]
 
     return any(c in texto for c in claves)
 
 
 def titulo_parecido(t1, t2):
-    return SequenceMatcher(None, limpiar_texto(t1), limpiar_texto(t2)).ratio() > 0.82
+    return SequenceMatcher(None, limpiar_texto(t1), limpiar_texto(t2)).ratio() >= 0.80
 
 
 def cargar_enviadas():
     if not os.path.exists(ARCHIVO_ENVIADAS):
         return {"links": [], "titulos": []}
-    with open(ARCHIVO_ENVIADAS, "r", encoding="utf-8") as f:
-        return json.load(f)
+
+    try:
+        with open(ARCHIVO_ENVIADAS, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"links": [], "titulos": []}
 
 
 def guardar_enviada(noticia):
     data = cargar_enviadas()
-    data["links"].append(noticia["link"])
-    data["titulos"].append(noticia["titulo"])
+
+    if noticia["link"] not in data["links"]:
+        data["links"].append(noticia["link"])
+
+    if noticia["titulo"] not in data["titulos"]:
+        data["titulos"].append(noticia["titulo"])
 
     data["links"] = data["links"][-300:]
     data["titulos"] = data["titulos"][-300:]
@@ -89,11 +97,53 @@ def ya_fue_enviada(noticia):
     if noticia["link"] in data["links"]:
         return True
 
-    for t in data["titulos"]:
-        if titulo_parecido(noticia["titulo"], t):
+    titulo_actual = noticia["titulo"]
+
+    for titulo_guardado in data["titulos"]:
+        if titulo_parecido(titulo_actual, titulo_guardado):
             return True
 
     return False
+
+
+# ========================
+# FECHA DE NOTICIA
+# ========================
+def obtener_fecha_noticia(link):
+    try:
+        r = requests.get(link, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        metas = [
+            {"property": "article:published_time"},
+            {"name": "pubdate"},
+            {"name": "publish-date"},
+            {"itemprop": "datePublished"}
+        ]
+
+        for meta in metas:
+            tag = soup.find("meta", attrs=meta)
+
+            if tag and tag.get("content"):
+                fecha = tag["content"][:10]
+
+                try:
+                    dt = datetime.fromisoformat(fecha)
+                    return dt.strftime("%d/%m/%Y")
+                except:
+                    return fecha
+
+        texto = soup.get_text(" ", strip=True)
+        patron = r"(\d{1,2}/\d{1,2}/\d{4})"
+        match = re.search(patron, texto)
+
+        if match:
+            return match.group(1)
+
+    except Exception as e:
+        print(f"Error obteniendo fecha: {e}")
+
+    return "Fecha no disponible"
 
 
 # ========================
@@ -128,11 +178,14 @@ def obtener_noticias():
                 if not es_noticia_slrc(titulo, href):
                     continue
 
-                noticias.append({
+                noticia = {
                     "titulo": titulo,
                     "link": href,
-                    "fuente": fuente["nombre"]
-                })
+                    "fuente": fuente["nombre"],
+                    "fecha": obtener_fecha_noticia(href)
+                }
+
+                noticias.append(noticia)
 
         except Exception as e:
             print(f"Error en {fuente['nombre']}: {e}")
@@ -142,14 +195,22 @@ def obtener_noticias():
 
 def eliminar_duplicados(lista):
     unicas = []
-    for n in lista:
+
+    for noticia in lista:
         repetida = False
-        for u in unicas:
-            if n["link"] == u["link"] or titulo_parecido(n["titulo"], u["titulo"]):
+
+        for existente in unicas:
+            if noticia["link"] == existente["link"]:
                 repetida = True
                 break
+
+            if titulo_parecido(noticia["titulo"], existente["titulo"]):
+                repetida = True
+                break
+
         if not repetida:
-            unicas.append(n)
+            unicas.append(noticia)
+
     return unicas
 
 
@@ -177,6 +238,7 @@ def enviar_noticia(noticia, i):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
     mensaje = f"""{i}. {noticia['titulo']}
+Fecha de la noticia: {noticia['fecha']}
 Fuente: {noticia['fuente']}
 Link: {noticia['link']}
 """
@@ -188,6 +250,9 @@ Link: {noticia['link']}
 
     if response.status_code == 200:
         guardar_enviada(noticia)
+        print(f"Enviada: {noticia['titulo']}")
+    else:
+        print("Error enviando:", response.text)
 
 
 # ========================
@@ -195,24 +260,26 @@ Link: {noticia['link']}
 # ========================
 def main():
     print("Buscando noticias...")
+
     noticias = obtener_noticias()
 
-    nuevas = [n for n in noticias if not ya_fue_enviada(n)]
+    noticias_nuevas = []
 
-    noticias_a_enviar = nuevas[:10]
+    for noticia in noticias:
+        if not ya_fue_enviada(noticia):
+            noticias_nuevas.append(noticia)
 
-    if len(noticias_a_enviar) < 10:
-        for n in noticias:
-            if n not in noticias_a_enviar:
-                noticias_a_enviar.append(n)
-            if len(noticias_a_enviar) == 10:
-                break
+    noticias_a_enviar = noticias_nuevas[:10]
+
+    if not noticias_a_enviar:
+        print("No hay noticias nuevas. No se enviará nada.")
+        return
 
     enviar_encabezado()
     time.sleep(3)
 
-    for i, n in enumerate(noticias_a_enviar, 1):
-        enviar_noticia(n, i)
+    for i, noticia in enumerate(noticias_a_enviar, 1):
+        enviar_noticia(noticia, i)
         time.sleep(1)
 
 
