@@ -107,51 +107,6 @@ def ya_fue_enviada(noticia):
 
 
 # ========================
-# EXTRAER FECHA Y HORA
-# ========================
-def obtener_fecha_hora_noticia(link):
-    try:
-        r = requests.get(link, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        metas = [
-            {"property": "article:published_time"},
-            {"name": "pubdate"},
-            {"name": "publish-date"},
-            {"itemprop": "datePublished"}
-        ]
-
-        for meta in metas:
-            tag = soup.find("meta", attrs=meta)
-
-            if tag and tag.get("content"):
-                fecha_raw = tag["content"]
-
-                try:
-                    dt = datetime.fromisoformat(
-                        fecha_raw.replace("Z", "+00:00")
-                    )
-
-                    return dt.strftime("%d/%m/%Y %H:%M")
-
-                except:
-                    return fecha_raw
-
-        texto = soup.get_text(" ", strip=True)
-
-        patron = r'(\d{1,2}/\d{1,2}/\d{4})'
-        match = re.search(patron, texto)
-
-        if match:
-            return match.group(1)
-
-    except Exception as e:
-        print(f"Error obteniendo fecha/hora: {e}")
-
-    return "Fecha/Hora no disponible"
-
-
-# ========================
 # SCRAPING
 # ========================
 def obtener_noticias():
@@ -205,8 +160,7 @@ def obtener_noticias():
                 noticia = {
                     "titulo": titulo,
                     "link": href,
-                    "fuente": fuente["nombre"],
-                    "fecha_hora": obtener_fecha_hora_noticia(href)
+                    "fuente": fuente["nombre"]
                 }
 
                 noticias.append(noticia)
@@ -263,7 +217,6 @@ def enviar_noticia(noticia, i):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
     mensaje = f"""*{i}. {noticia['titulo']}*
-Fecha/Hora de la noticia: {noticia['fecha_hora']}
 Fuente: {noticia['fuente']}
 Link: {noticia['link']}
 """
