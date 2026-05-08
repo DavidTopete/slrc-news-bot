@@ -29,7 +29,6 @@ FUENTES = [
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 
-
 # ========================
 # UTILIDADES
 # ========================
@@ -98,28 +97,18 @@ def ya_fue_enviada(noticia):
     if noticia["link"] in data["links"]:
         return True
 
+    titulo_actual = noticia["titulo"]
+
     for titulo_guardado in data["titulos"]:
-        if titulo_parecido(noticia["titulo"], titulo_guardado):
+        if titulo_parecido(titulo_actual, titulo_guardado):
             return True
 
     return False
 
 
 # ========================
-# FECHA / HORA DE NOTICIA
+# EXTRAER FECHA Y HORA
 # ========================
-def convertir_fecha_local(fecha_raw):
-    try:
-        dt = datetime.fromisoformat(fecha_raw.replace("Z", "+00:00"))
-
-        if dt.tzinfo:
-            dt = dt.astimezone(TZ)
-
-        return dt
-    except:
-        return None
-
-
 def obtener_fecha_hora_noticia(link):
     try:
         r = requests.get(link, headers=HEADERS, timeout=10)
@@ -127,7 +116,6 @@ def obtener_fecha_hora_noticia(link):
 
         metas = [
             {"property": "article:published_time"},
-            {"property": "article:modified_time"},
             {"name": "pubdate"},
             {"name": "publish-date"},
             {"itemprop": "datePublished"}
@@ -137,43 +125,30 @@ def obtener_fecha_hora_noticia(link):
             tag = soup.find("meta", attrs=meta)
 
             if tag and tag.get("content"):
-                dt = convertir_fecha_local(tag["content"])
+                fecha_raw = tag["content"]
 
-                if dt:
-                    return dt
+                try:
+                    dt = datetime.fromisoformat(
+                        fecha_raw.replace("Z", "+00:00")
+                    )
+
+                    return dt.strftime("%d/%m/%Y %H:%M")
+
+                except:
+                    return fecha_raw
 
         texto = soup.get_text(" ", strip=True)
 
-        patrones = [
-            r"(\d{1,2}/\d{1,2}/\d{4})",
-            r"(\d{4}-\d{2}-\d{2})"
-        ]
+        patron = r'(\d{1,2}/\d{1,2}/\d{4})'
+        match = re.search(patron, texto)
 
-        for patron in patrones:
-            match = re.search(patron, texto)
-
-            if match:
-                fecha_txt = match.group(1)
-
-                for formato in ("%d/%m/%Y", "%Y-%m-%d"):
-                    try:
-                        dt = datetime.strptime(fecha_txt, formato)
-                        return dt.replace(tzinfo=TZ)
-                    except:
-                        pass
+        if match:
+            return match.group(1)
 
     except Exception as e:
         print(f"Error obteniendo fecha/hora: {e}")
 
-    return None
-
-
-def es_de_hoy(fecha_dt):
-    if not fecha_dt:
-        return False
-
-    hoy = ahora_local().date()
-    return fecha_dt.date() == hoy
+    return "Fecha/Hora no disponible"
 
 
 # ========================
@@ -181,7 +156,6 @@ def es_de_hoy(fecha_dt):
 # ========================
 def obtener_noticias():
     noticias = []
-    data_enviadas = cargar_enviadas()
 
     for fuente in FUENTES:
         try:
@@ -209,34 +183,11 @@ def obtener_noticias():
                 if not es_noticia_slrc(titulo, href):
                     continue
 
-                # Evitar repetidos por link
-                if href in data_enviadas["links"]:
-                    print(f"REPETIDA POR LINK: {titulo}")
-                    continue
-
-                # Evitar repetidos por título parecido
-                repetida = False
-                for titulo_guardado in data_enviadas["titulos"]:
-                    if titulo_parecido(titulo, titulo_guardado):
-                        repetida = True
-                        break
-
-                if repetida:
-                    print(f"REPETIDA POR TITULO: {titulo}")
-                    continue
-
-                fecha_dt = obtener_fecha_hora_noticia(href)
-
-                # No mostrar noticias sin fecha o de días anteriores
-                if not es_de_hoy(fecha_dt):
-                    print(f"IGNORADA POR FECHA: {titulo}")
-                    continue
-
                 noticia = {
                     "titulo": titulo,
                     "link": href,
                     "fuente": fuente["nombre"],
-                    "fecha_hora": fecha_dt.strftime("%d/%m/%Y %H:%M")
+                    "fecha_hora": obtener_fecha_hora_noticia(href)
                 }
 
                 noticias.append(noticia)
@@ -273,12 +224,13 @@ def eliminar_duplicados(lista):
 # ========================
 def enviar_encabezado():
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+
     ahora = ahora_local()
 
     mensaje = f"""*SAN LUIS RIO COLORADO NOTICIAS*
 *Fecha: {ahora.strftime("%d/%m/%Y")}*
 *Hora: {ahora.strftime("%H:%M")}*
-*Cobertura: noticias publicadas hoy*
+*Cobertura: últimas 24 horas*
 """
 
     requests.post(url, data={
@@ -313,20 +265,20 @@ Link: {noticia['link']}
 # MAIN
 # ========================
 def main():
-    print("Buscando noticias de hoy...")
+    print("Buscando noticias...")
 
     noticias = obtener_noticias()
 
-    noticias_a_enviar = []
+    noticias_nuevas = []
 
     for noticia in noticias:
         if not ya_fue_enviada(noticia):
-            noticias_a_enviar.append(noticia)
+            noticias_nuevas.append(noticia)
 
-    noticias_a_enviar = noticias_a_enviar[:10]
+    noticias_a_enviar = noticias_nuevas[:10]
 
     if not noticias_a_enviar:
-        print("No hay noticias nuevas de hoy. No se enviará nada.")
+        print("No hay noticias nuevas. No se enviará nada.")
         return
 
     enviar_encabezado()
