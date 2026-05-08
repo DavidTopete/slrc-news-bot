@@ -2,7 +2,8 @@ name: Run SLRC News Bot
 
 on:
   schedule:
-    - cron: '3-59/5 * * * *'
+    # Ejecutar cada hora
+    - cron: '0 * * * *'
   workflow_dispatch:
 
 permissions:
