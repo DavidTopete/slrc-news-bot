@@ -157,6 +157,8 @@ def obtener_fecha_hora_noticia(link):
 def obtener_noticias():
     noticias = []
 
+    data_enviadas = cargar_enviadas()
+
     for fuente in FUENTES:
         try:
             print(f"Leyendo: {fuente['nombre']}")
@@ -181,6 +183,23 @@ def obtener_noticias():
                     continue
 
                 if not es_noticia_slrc(titulo, href):
+                    continue
+
+                # Evitar repetidos por link
+                if href in data_enviadas["links"]:
+                    print(f"REPETIDA POR LINK: {titulo}")
+                    continue
+
+                # Evitar repetidos por título
+                repetida = False
+
+                for titulo_guardado in data_enviadas["titulos"]:
+                    if titulo_parecido(titulo, titulo_guardado):
+                        repetida = True
+                        break
+
+                if repetida:
+                    print(f"REPETIDA POR TITULO: {titulo}")
                     continue
 
                 noticia = {
@@ -243,7 +262,7 @@ def enviar_encabezado():
 def enviar_noticia(noticia, i):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-    mensaje = f"""{i}. {noticia['titulo']}
+    mensaje = f"""*{i}. {noticia['titulo']}*
 Fecha/Hora de la noticia: {noticia['fecha_hora']}
 Fuente: {noticia['fuente']}
 Link: {noticia['link']}
@@ -251,7 +270,8 @@ Link: {noticia['link']}
 
     response = requests.post(url, data={
         "chat_id": CHAT_ID,
-        "text": mensaje
+        "text": mensaje,
+        "parse_mode": "Markdown"
     })
 
     if response.status_code == 200:
