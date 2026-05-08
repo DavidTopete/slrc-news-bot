@@ -2,8 +2,7 @@ name: Run SLRC News Bot
 
 on:
   schedule:
-    # Ejecutar cada 5 minutos (PRUEBA)
-    - cron: '*/5 * * * *'
+    - cron: '3/5 * * * *'
   workflow_dispatch:
 
 permissions:
