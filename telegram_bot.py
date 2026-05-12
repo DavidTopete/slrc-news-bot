@@ -16,6 +16,7 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 ARCHIVO_ENVIADAS = "noticias_enviadas.json"
 
+# Hora local correcta para San Luis Río Colorado / Sonora
 TZ = ZoneInfo("America/Hermosillo")
 
 FUENTES = [
@@ -32,11 +33,12 @@ HEADERS = {"User-Agent": "Mozilla/5.0"}
 # ========================
 # UTILIDADES
 # ========================
-def ahora_local():
+def ahora_slrc():
     return datetime.now(TZ)
 
 
 def escapar_markdown(texto):
+    texto = str(texto)
     caracteres = r"_*[]()~`>#+-=|{}.!"
     for c in caracteres:
         texto = texto.replace(c, f"\\{c}")
@@ -120,7 +122,6 @@ def ya_fue_enviada(noticia):
 # ========================
 def obtener_noticias():
     noticias = []
-
     data_enviadas = cargar_enviadas()
 
     for fuente in FUENTES:
@@ -134,11 +135,9 @@ def obtener_noticias():
             )
 
             soup = BeautifulSoup(r.text, "html.parser")
-
             links = soup.find_all("a", href=True)
 
             for item in links:
-
                 titulo = item.get_text(" ", strip=True)
                 href = item["href"]
 
@@ -159,10 +158,6 @@ def obtener_noticias():
                 if not es_noticia_slrc(titulo, href):
                     continue
 
-                # ========================
-                # EVITAR REPETIDOS
-                # ========================
-
                 if href in data_enviadas["links"]:
                     print(f"REPETIDA LINK: {titulo}")
                     continue
@@ -170,11 +165,7 @@ def obtener_noticias():
                 repetida = False
 
                 for titulo_guardado in data_enviadas["titulos"]:
-
-                    if titulo_parecido(
-                        titulo,
-                        titulo_guardado
-                    ):
+                    if titulo_parecido(titulo, titulo_guardado):
                         repetida = True
                         break
 
@@ -197,15 +188,12 @@ def obtener_noticias():
 
 
 def eliminar_duplicados(lista):
-
     unicas = []
 
     for noticia in lista:
-
         repetida = False
 
         for existente in unicas:
-
             if noticia["link"] == existente["link"]:
                 repetida = True
                 break
@@ -227,26 +215,31 @@ def eliminar_duplicados(lista):
 # TELEGRAM
 # ========================
 def enviar_encabezado():
-
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
-    ahora = ahora_local()
+    ahora = ahora_slrc()
 
-    mensaje = f"""*SAN LUIS RIO COLORADO NOTICIAS*
-*Fecha: {ahora.strftime("%d/%m/%Y")}*
-*Hora: {ahora.strftime("%H:%M")}*
-*Cobertura: últimas 24 horas*
-"""
+    fecha = escapar_markdown(ahora.strftime("%d/%m/%Y"))
+    hora = escapar_markdown(ahora.strftime("%I:%M %p"))
 
-    requests.post(url, data={
+    mensaje = (
+        "*SAN LUIS RIO COLORADO NOTICIAS*\n"
+        f"*Fecha:* {fecha}\n"
+        f"*Hora SLRC:* {hora}\n"
+        "*Cobertura:* últimas 24 horas"
+    )
+
+    response = requests.post(url, data={
         "chat_id": CHAT_ID,
         "text": mensaje,
         "parse_mode": "MarkdownV2"
     })
 
+    print("HEADER STATUS:", response.status_code)
+    print("HEADER RESPONSE:", response.text)
+
 
 def enviar_noticia(noticia, i):
-
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
     titulo = escapar_markdown(noticia["titulo"])
@@ -278,7 +271,6 @@ def enviar_noticia(noticia, i):
 # MAIN
 # ========================
 def main():
-
     print("Buscando noticias...")
 
     noticias = obtener_noticias()
@@ -286,7 +278,6 @@ def main():
     noticias_nuevas = []
 
     for noticia in noticias:
-
         if not ya_fue_enviada(noticia):
             noticias_nuevas.append(noticia)
 
@@ -301,9 +292,7 @@ def main():
     time.sleep(3)
 
     for i, noticia in enumerate(noticias_a_enviar, 1):
-
         enviar_noticia(noticia, i)
-
         time.sleep(1)
 
 
