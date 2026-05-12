@@ -2,11 +2,10 @@ name: Run SLRC News Bot
 
 on:
   schedule:
-    # Ejecutar 3 veces al día:
-    # 04:00 AM
-    # 12:00 PM
-    # 08:00 PM
-    - cron: '0 4,12,20 * * *'
+    # Hora de San Luis Río Colorado (UTC-7)
+    # 04:00 AM SLRC = 11:00 UTC
+    # 04:00 PM SLRC = 23:00 UTC
+    - cron: '0 11,23 * * *'
   workflow_dispatch:
 
 permissions:
