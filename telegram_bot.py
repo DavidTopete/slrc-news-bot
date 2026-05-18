@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 import json
 import os
@@ -58,7 +58,6 @@ def limpiar_texto(texto):
 # FILTRO ESTRICTO SLRC
 # ========================
 def es_noticia_slrc(titulo, link):
-
     texto = limpiar_texto(titulo + " " + link)
 
     claves_slrc = [
@@ -102,32 +101,20 @@ def es_noticia_slrc(titulo, link):
         "tijuana"
     ]
 
-    # ========================
-    # EXCLUIR OTRAS CIUDADES
-    # ========================
     for ciudad in ciudades_excluidas:
-
         if ciudad in texto:
-
             if (
                 "san luis rio colorado" not in texto
                 and "slrc" not in texto
             ):
                 return False
 
-    # ========================
-    # VALIDAR SLRC DIRECTO
-    # ========================
     if any(c in texto for c in claves_slrc):
         return True
 
-    # ========================
-    # VALIDAR CONTEXTO LOCAL
-    # ========================
     coincidencias = 0
 
     for palabra in claves_locales:
-
         if palabra in texto:
             coincidencias += 1
 
@@ -143,7 +130,6 @@ def titulo_parecido(t1, t2):
 
 
 def cargar_enviadas():
-
     if not os.path.exists(ARCHIVO_ENVIADAS):
         return {"links": [], "titulos": []}
 
@@ -156,7 +142,6 @@ def cargar_enviadas():
 
 
 def guardar_enviada(noticia):
-
     data = cargar_enviadas()
 
     if noticia["link"] not in data["links"]:
@@ -173,14 +158,12 @@ def guardar_enviada(noticia):
 
 
 def ya_fue_enviada(noticia):
-
     data = cargar_enviadas()
 
     if noticia["link"] in data["links"]:
         return True
 
     for titulo_guardado in data["titulos"]:
-
         if titulo_parecido(
             noticia["titulo"],
             titulo_guardado
@@ -194,7 +177,6 @@ def ya_fue_enviada(noticia):
 # FECHA DE NOTICIA
 # ========================
 def parsear_fecha_desde_texto(texto):
-
     meses = {
         "enero": 1,
         "febrero": 2,
@@ -218,14 +200,12 @@ def parsear_fecha_desde_texto(texto):
     ]
 
     for patron in patrones:
-
         match = re.search(patron, texto.lower())
 
         if not match:
             continue
 
         try:
-
             if patron == r"(\d{4}-\d{2}-\d{2})":
                 return datetime.strptime(
                     match.group(1),
@@ -261,7 +241,6 @@ def parsear_fecha_desde_texto(texto):
 
 
 def obtener_fecha_noticia(link):
-
     try:
         r = requests.get(
             link,
@@ -269,7 +248,10 @@ def obtener_fecha_noticia(link):
             timeout=10
         )
 
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(
+            r.text,
+            "html.parser"
+        )
 
         metas = [
             {"property": "article:published_time"},
@@ -280,15 +262,12 @@ def obtener_fecha_noticia(link):
         ]
 
         for meta in metas:
-
             tag = soup.find("meta", attrs=meta)
 
             if tag and tag.get("content"):
-
                 fecha_raw = tag["content"]
 
                 try:
-
                     dt = datetime.fromisoformat(
                         fecha_raw.replace("Z", "+00:00")
                     )
@@ -301,7 +280,6 @@ def obtener_fecha_noticia(link):
                     return dt
 
                 except:
-
                     fecha_parseada = parsear_fecha_desde_texto(
                         fecha_raw
                     )
@@ -314,36 +292,30 @@ def obtener_fecha_noticia(link):
         return parsear_fecha_desde_texto(texto)
 
     except Exception as e:
-
         print(f"Error obteniendo fecha: {e}")
 
         return None
 
 
 def es_fecha_valida(fecha_noticia):
-
     if not fecha_noticia:
         return False
 
     hoy = ahora_slrc().date()
-    ayer = hoy - timedelta(days=1)
 
-    return fecha_noticia.date() in [hoy, ayer]
+    return fecha_noticia.date() == hoy
 
 
 # ========================
 # SCRAPING
 # ========================
 def obtener_noticias():
-
     noticias = []
 
     data_enviadas = cargar_enviadas()
 
     for fuente in FUENTES:
-
         try:
-
             print(f"Leyendo: {fuente['nombre']}")
 
             r = requests.get(
@@ -360,7 +332,6 @@ def obtener_noticias():
             links = soup.find_all("a", href=True)
 
             for item in links:
-
                 titulo = item.get_text(
                     " ",
                     strip=True
@@ -372,7 +343,6 @@ def obtener_noticias():
                     continue
 
                 if href.startswith("/"):
-
                     base = (
                         fuente["url"].split("/")[0]
                         + "//"
@@ -387,16 +357,12 @@ def obtener_noticias():
                 if not es_noticia_slrc(titulo, href):
                     continue
 
-                # ========================
-                # EVITAR REPETIDOS
-                # ========================
                 if href in data_enviadas["links"]:
                     continue
 
                 repetida = False
 
                 for titulo_guardado in data_enviadas["titulos"]:
-
                     if titulo_parecido(
                         titulo,
                         titulo_guardado
@@ -407,12 +373,10 @@ def obtener_noticias():
                 if repetida:
                     continue
 
-                # ========================
-                # VALIDAR FECHA
-                # ========================
                 fecha_noticia = obtener_fecha_noticia(href)
 
                 if not es_fecha_valida(fecha_noticia):
+                    print(f"IGNORADA POR FECHA: {titulo}")
                     continue
 
                 noticia = {
@@ -424,22 +388,18 @@ def obtener_noticias():
                 noticias.append(noticia)
 
         except Exception as e:
-
             print(f"Error en {fuente['nombre']}: {e}")
 
     return eliminar_duplicados(noticias)
 
 
 def eliminar_duplicados(lista):
-
     unicas = []
 
     for noticia in lista:
-
         repetida = False
 
         for existente in unicas:
-
             if noticia["link"] == existente["link"]:
                 repetida = True
                 break
@@ -461,7 +421,6 @@ def eliminar_duplicados(lista):
 # TELEGRAM
 # ========================
 def enviar_encabezado():
-
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
     ahora = ahora_slrc()
@@ -478,7 +437,7 @@ def enviar_encabezado():
         "*SAN LUIS RIO COLORADO NOTICIAS*\n"
         f"*Fecha:* {fecha}\n"
         f"*Hora SLRC:* {hora}\n"
-        "*Cobertura:* hoy y ayer"
+        "*Cobertura:* noticias de hoy"
     )
 
     requests.post(url, data={
@@ -489,7 +448,6 @@ def enviar_encabezado():
 
 
 def enviar_noticia(noticia, i):
-
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
     titulo = escapar_markdown(
@@ -518,13 +476,10 @@ def enviar_noticia(noticia, i):
     })
 
     if response.status_code == 200:
-
         guardar_enviada(noticia)
-
         print(f"Enviada: {noticia['titulo']}")
 
     else:
-
         print("ERROR TELEGRAM:")
         print(response.text)
 
@@ -533,24 +488,20 @@ def enviar_noticia(noticia, i):
 # MAIN
 # ========================
 def main():
-
-    print("Buscando noticias...")
+    print("Buscando noticias de hoy...")
 
     noticias = obtener_noticias()
 
     noticias_nuevas = []
 
     for noticia in noticias:
-
         if not ya_fue_enviada(noticia):
             noticias_nuevas.append(noticia)
 
     noticias_a_enviar = noticias_nuevas[:10]
 
     if not noticias_a_enviar:
-
-        print("No hay noticias nuevas.")
-
+        print("No hay noticias nuevas de hoy. No se publicará nada.")
         return
 
     enviar_encabezado()
@@ -561,7 +512,6 @@ def main():
         noticias_a_enviar,
         1
     ):
-
         enviar_noticia(
             noticia,
             i
