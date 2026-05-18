@@ -1,6 +1,6 @@
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import json
 import os
@@ -16,7 +16,6 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 ARCHIVO_ENVIADAS = "noticias_enviadas.json"
 
-# Hora local correcta para San Luis Río Colorado / Sonora
 TZ = ZoneInfo("America/Hermosillo")
 
 FUENTES = [
@@ -118,6 +117,111 @@ def ya_fue_enviada(noticia):
 
 
 # ========================
+# FECHA DE NOTICIA
+# ========================
+def parsear_fecha_desde_texto(texto):
+    meses = {
+        "enero": 1,
+        "febrero": 2,
+        "marzo": 3,
+        "abril": 4,
+        "mayo": 5,
+        "junio": 6,
+        "julio": 7,
+        "agosto": 8,
+        "septiembre": 9,
+        "setiembre": 9,
+        "octubre": 10,
+        "noviembre": 11,
+        "diciembre": 12
+    }
+
+    patrones = [
+        r"(\d{4}-\d{2}-\d{2})",
+        r"(\d{1,2}/\d{1,2}/\d{4})",
+        r"(\d{1,2})\s+de\s+([a-záéíóúñ]+)\s+de\s+(\d{4})"
+    ]
+
+    for patron in patrones:
+        match = re.search(patron, texto.lower())
+
+        if not match:
+            continue
+
+        try:
+            if patron == r"(\d{4}-\d{2}-\d{2})":
+                return datetime.strptime(match.group(1), "%Y-%m-%d").replace(tzinfo=TZ)
+
+            if patron == r"(\d{1,2}/\d{1,2}/\d{4})":
+                return datetime.strptime(match.group(1), "%d/%m/%Y").replace(tzinfo=TZ)
+
+            dia = int(match.group(1))
+            mes_nombre = match.group(2)
+            anio = int(match.group(3))
+            mes = meses.get(limpiar_texto(mes_nombre))
+
+            if mes:
+                return datetime(anio, mes, dia, tzinfo=TZ)
+
+        except:
+            pass
+
+    return None
+
+
+def obtener_fecha_noticia(link):
+    try:
+        r = requests.get(link, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        metas = [
+            {"property": "article:published_time"},
+            {"property": "article:modified_time"},
+            {"name": "pubdate"},
+            {"name": "publish-date"},
+            {"itemprop": "datePublished"}
+        ]
+
+        for meta in metas:
+            tag = soup.find("meta", attrs=meta)
+
+            if tag and tag.get("content"):
+                fecha_raw = tag["content"]
+
+                try:
+                    dt = datetime.fromisoformat(fecha_raw.replace("Z", "+00:00"))
+
+                    if dt.tzinfo:
+                        dt = dt.astimezone(TZ)
+                    else:
+                        dt = dt.replace(tzinfo=TZ)
+
+                    return dt
+
+                except:
+                    fecha_parseada = parsear_fecha_desde_texto(fecha_raw)
+                    if fecha_parseada:
+                        return fecha_parseada
+
+        texto = soup.get_text(" ", strip=True)
+        return parsear_fecha_desde_texto(texto)
+
+    except Exception as e:
+        print(f"Error obteniendo fecha de noticia: {e}")
+        return None
+
+
+def es_fecha_valida(fecha_noticia):
+    if not fecha_noticia:
+        return False
+
+    hoy = ahora_slrc().date()
+    ayer = hoy - timedelta(days=1)
+
+    return fecha_noticia.date() in [hoy, ayer]
+
+
+# ========================
 # SCRAPING
 # ========================
 def obtener_noticias():
@@ -173,10 +277,17 @@ def obtener_noticias():
                     print(f"REPETIDA TITULO: {titulo}")
                     continue
 
+                fecha_noticia = obtener_fecha_noticia(href)
+
+                if not es_fecha_valida(fecha_noticia):
+                    print(f"IGNORADA POR FECHA: {titulo}")
+                    continue
+
                 noticia = {
                     "titulo": titulo,
                     "link": href,
-                    "fuente": fuente["nombre"]
+                    "fuente": fuente["nombre"],
+                    "fecha": fecha_noticia.strftime("%d/%m/%Y")
                 }
 
                 noticias.append(noticia)
@@ -226,7 +337,7 @@ def enviar_encabezado():
         "*SAN LUIS RIO COLORADO NOTICIAS*\n"
         f"*Fecha:* {fecha}\n"
         f"*Hora SLRC:* {hora}\n"
-        "*Cobertura:* últimas 24 horas"
+        "*Cobertura:* hoy y ayer"
     )
 
     response = requests.post(url, data={
@@ -284,7 +395,7 @@ def main():
     noticias_a_enviar = noticias_nuevas[:10]
 
     if not noticias_a_enviar:
-        print("No hay noticias nuevas.")
+        print("No hay noticias nuevas de hoy o ayer.")
         return
 
     enviar_encabezado()
