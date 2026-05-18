@@ -437,7 +437,6 @@ def enviar_encabezado():
         "*SAN LUIS RIO COLORADO NOTICIAS*\n"
         f"*Fecha:* {fecha}\n"
         f"*Hora SLRC:* {hora}\n"
-        "*Cobertura:* noticias de hoy"
     )
 
     requests.post(url, data={
