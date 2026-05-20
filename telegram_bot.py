@@ -15,6 +15,7 @@ TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 ARCHIVO_ENVIADAS = "noticias_enviadas.json"
+
 TZ = ZoneInfo("America/Hermosillo")
 
 FUENTES = [
@@ -26,7 +27,9 @@ FUENTES = [
     {"nombre": "El Imparcial Sonora", "url": "https://www.elimparcial.com/sonora/"}
 ]
 
-HEADERS = {"User-Agent": "Mozilla/5.0"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
+}
 
 # ========================
 # UTILIDADES
@@ -36,6 +39,7 @@ def ahora_slrc():
 
 
 def escapar_markdown(texto):
+
     texto = str(texto)
 
     caracteres = r"_*[]()~`>#+-=|{}.!"
@@ -69,7 +73,9 @@ def limpiar_texto(texto):
 # ========================
 def es_noticia_slrc(titulo, link):
 
-    texto = limpiar_texto(titulo + " " + link)
+    texto = limpiar_texto(
+        titulo + " " + link
+    )
 
     claves_slrc = [
         "san luis rio colorado",
@@ -150,7 +156,9 @@ def titulo_parecido(t1, t2):
 # ========================
 def cargar_enviadas():
 
-    if not os.path.exists(ARCHIVO_ENVIADAS):
+    if not os.path.exists(
+        ARCHIVO_ENVIADAS
+    ):
 
         return {
             "links": [],
@@ -180,10 +188,14 @@ def guardar_enviada(noticia):
     data = cargar_enviadas()
 
     if noticia["link"] not in data["links"]:
-        data["links"].append(noticia["link"])
+        data["links"].append(
+            noticia["link"]
+        )
 
     if noticia["titulo"] not in data["titulos"]:
-        data["titulos"].append(noticia["titulo"])
+        data["titulos"].append(
+            noticia["titulo"]
+        )
 
     data["links"] = data["links"][-300:]
     data["titulos"] = data["titulos"][-300:]
@@ -222,7 +234,7 @@ def ya_fue_enviada(noticia):
 
 
 # ========================
-# FECHA DE NOTICIA
+# FECHA
 # ========================
 def parsear_fecha_desde_texto(texto):
 
@@ -284,7 +296,9 @@ def parsear_fecha_desde_texto(texto):
 
             anio = int(match.group(3))
 
-            mes = meses.get(mes_nombre)
+            mes = meses.get(
+                mes_nombre
+            )
 
             if mes:
 
@@ -349,13 +363,17 @@ def obtener_fecha_noticia(link):
                     else:
                         dt = dt.replace(tzinfo=TZ)
 
-                    print(f"FECHA DETECTADA META: {dt}")
+                    print(
+                        f"FECHA DETECTADA META: {dt}"
+                    )
 
                     return dt
 
                 except Exception as e:
 
-                    print(f"ERROR PARSEANDO META: {e}")
+                    print(
+                        f"ERROR PARSEANDO META: {e}"
+                    )
 
                     fecha_parseada = parsear_fecha_desde_texto(
                         fecha_raw
@@ -374,7 +392,9 @@ def obtener_fecha_noticia(link):
             strip=True
         )
 
-        fecha_parseada = parsear_fecha_desde_texto(texto)
+        fecha_parseada = parsear_fecha_desde_texto(
+            texto
+        )
 
         if fecha_parseada:
 
@@ -384,13 +404,17 @@ def obtener_fecha_noticia(link):
 
             return fecha_parseada
 
-        print(f"SIN FECHA DETECTABLE: {link}")
+        print(
+            f"SIN FECHA DETECTABLE: {link}"
+        )
 
         return None
 
     except Exception as e:
 
-        print(f"ERROR OBTENIENDO FECHA: {e}")
+        print(
+            f"ERROR OBTENIENDO FECHA: {e}"
+        )
 
         return None
 
@@ -434,7 +458,9 @@ def obtener_noticias():
 
         try:
 
-            print(f"Leyendo: {fuente['nombre']}")
+            print(
+                f"Leyendo: {fuente['nombre']}"
+            )
 
             r = requests.get(
                 fuente["url"],
@@ -540,7 +566,9 @@ def obtener_noticias():
                 f"ERROR EN FUENTE {fuente['nombre']}: {e}"
             )
 
-    return eliminar_duplicados(noticias)
+    return eliminar_duplicados(
+        noticias
+    )
 
 
 def eliminar_duplicados(lista):
@@ -579,7 +607,9 @@ def eliminar_duplicados(lista):
 # ========================
 def enviar_encabezado():
 
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    url = (
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    )
 
     ahora = ahora_slrc()
 
@@ -587,14 +617,9 @@ def enviar_encabezado():
         ahora.strftime("%d/%m/%Y")
     )
 
-    hora = escapar_markdown(
-        ahora.strftime("%I:%M %p")
-    )
-
     mensaje = (
         "*SAN LUIS RIO COLORADO NOTICIAS*\n"
-        f"*Fecha:* {fecha}\n"
-        f"*Hora SLRC:* {hora}"
+        f"*Fecha:* {fecha}"
     )
 
     response = requests.post(
@@ -619,7 +644,9 @@ def enviar_encabezado():
 
 def enviar_noticia(noticia):
 
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    url = (
+        f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    )
 
     titulo = escapar_markdown(
         noticia["titulo"]
@@ -651,7 +678,9 @@ def enviar_noticia(noticia):
 
     if response.status_code == 200:
 
-        guardar_enviada(noticia)
+        guardar_enviada(
+            noticia
+        )
 
         print(
             f"ENVIADA: {noticia['titulo']}"
@@ -659,7 +688,9 @@ def enviar_noticia(noticia):
 
     else:
 
-        print("ERROR TELEGRAM:")
+        print(
+            "ERROR TELEGRAM:"
+        )
 
         print(response.text)
 
@@ -669,7 +700,9 @@ def enviar_noticia(noticia):
 # ========================
 def main():
 
-    print("Buscando noticias de HOY...")
+    print(
+        "Buscando noticias de HOY..."
+    )
 
     noticias = obtener_noticias()
 
@@ -677,9 +710,13 @@ def main():
 
     for noticia in noticias:
 
-        if not ya_fue_enviada(noticia):
+        if not ya_fue_enviada(
+            noticia
+        ):
 
-            noticias_nuevas.append(noticia)
+            noticias_nuevas.append(
+                noticia
+            )
 
     noticias_a_enviar = noticias_nuevas[:10]
 
@@ -697,7 +734,9 @@ def main():
 
     for noticia in noticias_a_enviar:
 
-        enviar_noticia(noticia)
+        enviar_noticia(
+            noticia
+        )
 
         time.sleep(1)
 
