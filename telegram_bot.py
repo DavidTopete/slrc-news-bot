@@ -147,15 +147,10 @@ def titulo_parecido(t1, t2):
 def historial_vacio():
 
     return {
-
         "ultima_ejecucion": None,
-
         "ultimo_total_encontrado": 0,
-
         "ultimo_total_enviado": 0,
-
         "links": [],
-
         "titulos": []
     }
 
@@ -163,7 +158,6 @@ def historial_vacio():
 def cargar_enviadas():
 
     if not os.path.exists(ARCHIVO_ENVIADAS):
-
         return historial_vacio()
 
     try:
@@ -177,23 +171,15 @@ def cargar_enviadas():
             data = json.load(f)
 
         if not isinstance(data, dict):
-
             return historial_vacio()
 
         base = historial_vacio()
-
         base.update(data)
 
-        if not isinstance(
-            base.get("links"),
-            list
-        ):
+        if not isinstance(base.get("links"), list):
             base["links"] = []
 
-        if not isinstance(
-            base.get("titulos"),
-            list
-        ):
+        if not isinstance(base.get("titulos"), list):
             base["titulos"] = []
 
         return base
@@ -240,10 +226,7 @@ def guardar_enviadas_en_disco(historial):
         [-MAX_HISTORIAL:]
     )
 
-    temporal = (
-        ARCHIVO_ENVIADAS
-        + ".tmp"
-    )
+    temporal = ARCHIVO_ENVIADAS + ".tmp"
 
     with open(
         temporal,
@@ -281,9 +264,7 @@ class Historial:
         )
 
         self.ultima_ejecucion = (
-            data.get(
-                "ultima_ejecucion"
-            )
+            data.get("ultima_ejecucion")
         )
 
         self.ultimo_total_encontrado = (
@@ -304,7 +285,6 @@ class Historial:
     def ya_fue_enviada(self, noticia):
 
         if noticia["link"] in self.links:
-
             return True
 
         return any(
@@ -325,10 +305,7 @@ class Historial:
             noticia["link"]
         )
 
-        if (
-            noticia["titulo"]
-            not in self.titulos
-        ):
+        if noticia["titulo"] not in self.titulos:
 
             self.titulos.append(
                 noticia["titulo"]
@@ -342,16 +319,10 @@ class Historial:
     ):
 
         if encontrados is not None:
-
-            self.ultimo_total_encontrado = (
-                encontrados
-            )
+            self.ultimo_total_encontrado = encontrados
 
         if enviados is not None:
-
-            self.ultimo_total_enviado = (
-                enviados
-            )
+            self.ultimo_total_enviado = enviados
 
         self.ultima_ejecucion = (
             datetime
@@ -395,82 +366,48 @@ def es_noticia_slrc(titulo, link):
     )
 
     claves_slrc = [
-
         "san luis rio colorado",
-
         "slrc",
-
         "san luis sonora",
-
         "san luis r c",
-
         "golfo de santa clara",
-
         "luis b sanchez",
-
         "valle de san luis",
-
         "san luis"
     ]
 
-
     ciudades_excluidas = [
-
         "hermosillo",
-
         "nogales",
-
         "guaymas",
-
         "ciudad obregon",
-
         "obregon",
-
         "caborca",
-
         "navojoa",
-
         "cananea",
-
         "agua prieta",
-
         "puerto penasco",
-
         "magdalena",
-
         "sonoyta",
-
         "tijuana",
-
         "ensenada"
     ]
-
 
     for ciudad in ciudades_excluidas:
 
         if ciudad in texto:
 
             if (
-                "san luis rio colorado"
-                not in texto
-
-                and "slrc"
-                not in texto
-
-                and "golfo de santa clara"
-                not in texto
-
-                and "luis b sanchez"
-                not in texto
+                "san luis rio colorado" not in texto
+                and "slrc" not in texto
+                and "golfo de santa clara" not in texto
+                and "luis b sanchez" not in texto
             ):
 
                 return False
 
-
     return any(
-
         clave in texto
-
         for clave in claves_slrc
     )
 
@@ -482,13 +419,11 @@ def es_noticia_slrc(titulo, link):
 def convertir_fecha(fecha_texto):
 
     if not fecha_texto:
-
         return None
 
-    fecha_texto = (
-        str(fecha_texto)
-        .strip()
-    )
+    fecha_texto = str(
+        fecha_texto
+    ).strip()
 
     try:
 
@@ -512,9 +447,7 @@ def convertir_fecha(fecha_texto):
         return fecha.astimezone(TZ)
 
     except (ValueError, TypeError):
-
         pass
-
 
     try:
 
@@ -558,7 +491,6 @@ def extraer_fecha_json_ld(soup):
             )
 
             if fecha:
-
                 return fecha
 
     return None
@@ -582,40 +514,14 @@ def obtener_fecha_articulo(link):
             "html.parser"
         )
 
-
         metas = [
-
-            {
-                "property":
-                "article:published_time"
-            },
-
-            {
-                "property":
-                "article:modified_time"
-            },
-
-            {
-                "name":
-                "date"
-            },
-
-            {
-                "name":
-                "pubdate"
-            },
-
-            {
-                "name":
-                "publishdate"
-            },
-
-            {
-                "itemprop":
-                "datePublished"
-            }
+            {"property": "article:published_time"},
+            {"property": "article:modified_time"},
+            {"name": "date"},
+            {"name": "pubdate"},
+            {"name": "publishdate"},
+            {"itemprop": "datePublished"}
         ]
-
 
         for meta_info in metas:
 
@@ -634,21 +540,16 @@ def obtener_fecha_articulo(link):
                 )
 
                 if fecha:
-
                     return fecha
-
 
         fecha = extraer_fecha_json_ld(
             soup
         )
 
         if fecha:
-
             return fecha
 
-
         return None
-
 
     except requests.exceptions.RequestException as error:
 
@@ -673,7 +574,6 @@ def es_fecha_aceptable(noticia):
         - timedelta(days=1)
     )
 
-
     if fecha:
 
         noticia["fecha"] = fecha
@@ -689,7 +589,6 @@ def es_fecha_aceptable(noticia):
             fecha.date()
             == hoy
         )
-
 
     log.info(
         "Sin fecha detectable, "
@@ -721,13 +620,11 @@ def obtener_og_image(link):
             "html.parser"
         )
 
-
         # Open Graph
         meta = soup.find(
             "meta",
             attrs={
-                "property":
-                "og:image"
+                "property": "og:image"
             }
         )
 
@@ -741,13 +638,11 @@ def obtener_og_image(link):
                 meta["content"].strip()
             )
 
-
-        # Twitter Card fallback
+        # Twitter image como alternativa
         meta = soup.find(
             "meta",
             attrs={
-                "name":
-                "twitter:image"
+                "name": "twitter:image"
             }
         )
 
@@ -760,7 +655,6 @@ def obtener_og_image(link):
                 link,
                 meta["content"].strip()
             )
-
 
     except requests.exceptions.RequestException as error:
 
@@ -768,7 +662,6 @@ def obtener_og_image(link):
             "No se pudo obtener "
             f"imagen de {link}: {error}"
         )
-
 
     return None
 
@@ -781,22 +674,16 @@ def eliminar_duplicados(lista):
 
     unicas = []
 
-
     for noticia in lista:
 
         repetida = False
 
-
         for existente in unicas:
 
-            if (
-                noticia["link"]
-                == existente["link"]
-            ):
+            if noticia["link"] == existente["link"]:
 
                 repetida = True
                 break
-
 
             if titulo_parecido(
                 noticia["titulo"],
@@ -806,13 +693,11 @@ def eliminar_duplicados(lista):
                 repetida = True
                 break
 
-
         if not repetida:
 
             unicas.append(
                 noticia
             )
-
 
     return unicas
 
@@ -827,24 +712,15 @@ def construir_url_absoluta(
 ):
 
     if not href:
-
         return None
-
 
     href = href.strip()
 
-
-    if href.startswith(
-        "javascript:"
-    ):
-
+    if href.startswith("javascript:"):
         return None
-
 
     if href.startswith("#"):
-
         return None
-
 
     return urljoin(
         base_url,
@@ -855,45 +731,27 @@ def construir_url_absoluta(
 def parece_articulo(link):
 
     if not link:
-
         return False
-
 
     url = limpiar_texto(link)
 
-
     excluir = [
-
         "facebook com",
-
         "twitter com",
-
         "instagram com",
-
         "youtube com",
-
         "whatsapp",
-
         "login",
-
         "suscripcion",
-
         "subscription",
-
         "privacy",
-
         "privacidad",
-
         "terminos",
-
         "contacto"
     ]
 
-
     return not any(
-
         palabra in url
-
         for palabra in excluir
     )
 
@@ -901,7 +759,6 @@ def parece_articulo(link):
 def obtener_noticias(historial):
 
     candidatas = []
-
 
     for fuente in FUENTES:
 
@@ -912,101 +769,66 @@ def obtener_noticias(historial):
                 f"{fuente['nombre']}"
             )
 
-
             r = requests.get(
-
                 fuente["url"],
-
                 headers=HEADERS,
-
                 timeout=15,
-
                 allow_redirects=True
             )
 
-
             r.raise_for_status()
-
 
             soup = BeautifulSoup(
                 r.text,
                 "html.parser"
             )
 
-
             links = soup.find_all(
                 "a",
                 href=True
             )
 
-
-            for posicion, item in enumerate(
-                links
-            ):
+            for posicion, item in enumerate(links):
 
                 titulo = item.get_text(
                     " ",
                     strip=True
                 )
 
-
                 href = item.get(
                     "href",
                     ""
                 ).strip()
 
-
                 if (
                     not titulo
                     or len(titulo) < 25
                 ):
-
                     continue
 
-
                 link = construir_url_absoluta(
-
                     fuente["url"],
-
                     href
                 )
 
-
                 if not link:
-
                     continue
 
-
-                if not parece_articulo(
-                    link
-                ):
-
+                if not parece_articulo(link):
                     continue
-
 
                 if not es_noticia_slrc(
                     titulo,
                     link
                 ):
-
                     continue
 
-
                 noticia = {
-
-                    "titulo":
-                        titulo,
-
-                    "link":
-                        link,
-
-                    "fuente":
-                        fuente["nombre"],
-
-                    "posicion":
-                        posicion
+                    "titulo": titulo,
+                    "link": link,
+                    "fuente": fuente["nombre"],
+                    "posicion": posicion
                 }
-
 
                 if historial.ya_fue_enviada(
                     noticia
@@ -1019,11 +841,9 @@ def obtener_noticias(historial):
 
                     continue
 
-
                 candidatas.append(
                     noticia
                 )
-
 
         except requests.exceptions.RequestException as error:
 
@@ -1033,7 +853,6 @@ def obtener_noticias(historial):
                 f"{error}"
             )
 
-
         except Exception as error:
 
             log.exception(
@@ -1042,18 +861,12 @@ def obtener_noticias(historial):
                 f"{error}"
             )
 
-
-    # --------------------------------------------------------
-    # Eliminar noticias repetidas
-    # --------------------------------------------------------
-
+    # Eliminar duplicados entre fuentes y secciones
     candidatas = eliminar_duplicados(
         candidatas
     )
 
-
     noticias_finales = []
-
 
     for noticia in candidatas:
 
@@ -1071,17 +884,13 @@ def obtener_noticias(historial):
                 noticia
             )
 
-
         if (
             len(noticias_finales)
             >= MAX_NOTICIAS_POR_CORRIDA
         ):
-
             break
 
-
         time.sleep(0.3)
-
 
     return noticias_finales
 
@@ -1099,7 +908,6 @@ def validar_respuesta_telegram(
         f"{response.status_code}"
     )
 
-
     if response.status_code != 200:
 
         log.error(
@@ -1108,7 +916,6 @@ def validar_respuesta_telegram(
         )
 
         return False
-
 
     try:
 
@@ -1123,7 +930,6 @@ def validar_respuesta_telegram(
 
         return False
 
-
     if not payload.get(
         "ok",
         False
@@ -1135,7 +941,6 @@ def validar_respuesta_telegram(
         )
 
         return False
-
 
     return True
 
@@ -1150,41 +955,27 @@ def enviar_mensaje(
         f"bot{TOKEN}/sendMessage"
     )
 
-
     try:
 
         datos = {
+            "chat_id": CHAT_ID,
+            "text": texto,
+            "parse_mode": "HTML",
 
-            "chat_id":
-                CHAT_ID,
-
-            "text":
-                texto,
-
-            "parse_mode":
-                "HTML",
-
-            # False = Telegram muestra
-            # imagen/vista previa
+            # False = Telegram muestra la vista previa
             "disable_web_page_preview":
                 not mostrar_preview
         }
 
-
         response = requests.post(
-
             url,
-
             data=datos,
-
             timeout=25
         )
-
 
         return validar_respuesta_telegram(
             response
         )
-
 
     except requests.exceptions.RequestException as error:
 
@@ -1206,62 +997,46 @@ def enviar_noticia(noticia):
         noticia["titulo"]
     )
 
-
     fuente = escapar_html(
         noticia["fuente"]
     )
 
-
-    # Se deja el URL directo en el mensaje.
-    # Telegram usa este enlace para obtener:
-    #
+    # El URL directo permite a Telegram obtener:
     # og:image
     # og:title
     # og:description
-    #
-    # y generar la tarjeta visual.
+    # y generar la vista previa.
 
     link = escapar_html(
         noticia["link"]
     )
 
-
     mensaje = (
-
         f"<b>{titulo}</b>\n"
-
         f"Fuente: {fuente}\n"
-
         f"Link: {link}"
     )
 
-
     enviado = enviar_mensaje(
-
         mensaje,
-
         mostrar_preview=True
     )
-
 
     if enviado:
 
         if noticia.get("imagen"):
 
             log.info(
-                "Enviada con imagen "
-                "detectada: "
+                "Enviada con imagen detectada: "
                 f"{noticia['imagen']}"
             )
 
         else:
 
             log.info(
-                "Enviada. Telegram "
-                "intentará generar "
-                "la vista previa."
+                "Enviada. Telegram intentará "
+                "generar la vista previa."
             )
-
 
     return enviado
 
@@ -1284,7 +1059,6 @@ def main():
 
         return
 
-
     # --------------------------------------------------------
     # Verificar CHAT_ID
     # --------------------------------------------------------
@@ -1297,15 +1071,12 @@ def main():
 
         return
 
-
     log.info(
         "Buscando noticias nuevas "
         "de San Luis Río Colorado..."
     )
 
-
     historial = Historial()
-
 
     # --------------------------------------------------------
     # Registrar que el bot corrió
@@ -1315,7 +1086,6 @@ def main():
         encontrados=0,
         enviados=0
     )
-
 
     # --------------------------------------------------------
     # Buscar noticias
@@ -1327,15 +1097,12 @@ def main():
         )
     )
 
-
     historial.guardar(
-
-        encontrados=
-            len(noticias_a_enviar),
-
+        encontrados=len(
+            noticias_a_enviar
+        ),
         enviados=0
     )
-
 
     # --------------------------------------------------------
     # Si no hay noticias, terminar
@@ -1350,7 +1117,6 @@ def main():
 
         return
 
-
     # ========================================================
     # ENCABEZADO
     # ========================================================
@@ -1361,115 +1127,78 @@ def main():
         .strftime("%d/%m/%Y")
     )
 
-
     encabezado = (
-
-        "<b>SAN LUIS NEWS</b>\n"
-
         "<b>SAN LUIS NOTICIAS</b>\n"
-
         f"<b>Fecha:</b> {ahora}"
     )
 
-
+    # El encabezado no genera preview
     enviar_mensaje(
-
         encabezado,
-
         mostrar_preview=False
     )
 
-
-    # Pequeña pausa antes de las noticias
-
+    # Pausa antes de comenzar las noticias
     time.sleep(2)
-
 
     # ========================================================
     # ENVIAR NOTICIAS
     # ========================================================
 
     total_enviadas = 0
-
     total_fallidas = 0
 
-
     for noticia in noticias_a_enviar:
-
 
         enviado = enviar_noticia(
             noticia
         )
 
-
         if enviado:
 
-
-            # -----------------------------------------------
-            # Registrar noticia
-            # -----------------------------------------------
-
+            # Registrar la noticia
             historial.registrar(
                 noticia
             )
 
-
             total_enviadas += 1
 
-
-            # -----------------------------------------------
-            # Guardar inmediatamente
-            # -----------------------------------------------
-
+            # Guardar inmediatamente después
+            # de cada envío exitoso.
             historial.guardar(
-
-                encontrados=
-                    len(noticias_a_enviar),
-
-                enviados=
-                    total_enviadas
+                encontrados=len(
+                    noticias_a_enviar
+                ),
+                enviados=total_enviadas
             )
-
 
         else:
 
-
             total_fallidas += 1
 
-
             log.warning(
-
                 "No se pudo enviar; "
-                "se reintentará en "
-                "próxima corrida: "
-
+                "se reintentará en próxima corrida: "
                 f"{noticia['titulo']}"
             )
 
-
-        # Evitar demasiadas solicitudes seguidas
+        # Evitar demasiadas solicitudes consecutivas
         time.sleep(1)
-
 
     # ========================================================
     # GUARDADO FINAL
     # ========================================================
 
     historial.guardar(
-
-        encontrados=
-            len(noticias_a_enviar),
-
-        enviados=
-            total_enviadas
+        encontrados=len(
+            noticias_a_enviar
+        ),
+        enviados=total_enviadas
     )
 
-
     log.info(
-
         f"Total enviadas: "
         f"{total_enviadas} | "
-
         f"Total fallidas: "
         f"{total_fallidas}"
     )
@@ -1480,5 +1209,4 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
     main()
