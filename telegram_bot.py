@@ -28,17 +28,12 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 ARCHIVO_ENVIADAS = "noticias_enviadas.json"
 
-# San Luis Río Colorado / Sonora = UTC-7
 TZ = ZoneInfo("America/Hermosillo")
 
 UMBRAL_SIMILITUD_TITULO = 0.80
 MAX_HISTORIAL = 1000
-
-# Máximo de noticias enviadas en cada ejecución
 MAX_NOTICIAS_POR_CORRIDA = 10
 
-# Como el bot corre una vez al día a las 4:00 AM,
-# se consideran noticias publicadas hoy o ayer.
 ACEPTAR_HOY_Y_AYER = True
 
 
@@ -85,7 +80,6 @@ HEADERS = {
 # ============================================================
 
 def limpiar_texto(texto):
-
     texto = str(texto or "").lower()
 
     texto = texto.replace("á", "a")
@@ -96,23 +90,13 @@ def limpiar_texto(texto):
     texto = texto.replace("ü", "u")
     texto = texto.replace("ñ", "n")
 
-    texto = re.sub(
-        r"[^a-z0-9\s]",
-        " ",
-        texto
-    )
-
-    texto = re.sub(
-        r"\s+",
-        " ",
-        texto
-    ).strip()
+    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
+    texto = re.sub(r"\s+", " ", texto).strip()
 
     return texto
 
 
 def escapar_html(texto):
-
     texto = str(texto or "")
 
     return (
@@ -124,7 +108,6 @@ def escapar_html(texto):
 
 
 def titulo_parecido(t1, t2):
-
     a = limpiar_texto(t1)
     b = limpiar_texto(t2)
 
@@ -145,7 +128,6 @@ def titulo_parecido(t1, t2):
 # ============================================================
 
 def historial_vacio():
-
     return {
         "ultima_ejecucion": None,
         "ultimo_total_encontrado": 0,
@@ -156,18 +138,15 @@ def historial_vacio():
 
 
 def cargar_enviadas():
-
     if not os.path.exists(ARCHIVO_ENVIADAS):
         return historial_vacio()
 
     try:
-
         with open(
             ARCHIVO_ENVIADAS,
             "r",
             encoding="utf-8"
         ) as f:
-
             data = json.load(f)
 
         if not isinstance(data, dict):
@@ -185,13 +164,11 @@ def cargar_enviadas():
         return base
 
     except Exception as error:
-
         log.error(
             f"Error leyendo historial: {error}"
         )
 
         try:
-
             respaldo = (
                 f"{ARCHIVO_ENVIADAS}"
                 f".bak_{int(time.time())}"
@@ -213,17 +190,12 @@ def cargar_enviadas():
 
 
 def guardar_enviadas_en_disco(historial):
-
     historial["links"] = (
-        historial
-        .get("links", [])
-        [-MAX_HISTORIAL:]
+        historial.get("links", [])[-MAX_HISTORIAL:]
     )
 
     historial["titulos"] = (
-        historial
-        .get("titulos", [])
-        [-MAX_HISTORIAL:]
+        historial.get("titulos", [])[-MAX_HISTORIAL:]
     )
 
     temporal = ARCHIVO_ENVIADAS + ".tmp"
@@ -252,7 +224,6 @@ def guardar_enviadas_en_disco(historial):
 class Historial:
 
     def __init__(self):
-
         data = cargar_enviadas()
 
         self.links = set(
@@ -263,61 +234,47 @@ class Historial:
             data["titulos"]
         )
 
-        self.ultima_ejecucion = (
-            data.get("ultima_ejecucion")
+        self.ultima_ejecucion = data.get(
+            "ultima_ejecucion"
         )
 
-        self.ultimo_total_encontrado = (
-            data.get(
-                "ultimo_total_encontrado",
-                0
-            )
+        self.ultimo_total_encontrado = data.get(
+            "ultimo_total_encontrado",
+            0
         )
 
-        self.ultimo_total_enviado = (
-            data.get(
-                "ultimo_total_enviado",
-                0
-            )
+        self.ultimo_total_enviado = data.get(
+            "ultimo_total_enviado",
+            0
         )
-
 
     def ya_fue_enviada(self, noticia):
-
         if noticia["link"] in self.links:
             return True
 
         return any(
-
             titulo_parecido(
                 noticia["titulo"],
                 titulo_guardado
             )
-
-            for titulo_guardado
-            in self.titulos
+            for titulo_guardado in self.titulos
         )
 
-
     def registrar(self, noticia):
-
         self.links.add(
             noticia["link"]
         )
 
         if noticia["titulo"] not in self.titulos:
-
             self.titulos.append(
                 noticia["titulo"]
             )
-
 
     def guardar(
         self,
         encontrados=None,
         enviados=None
     ):
-
         if encontrados is not None:
             self.ultimo_total_encontrado = encontrados
 
@@ -331,7 +288,6 @@ class Historial:
         )
 
         guardar_enviadas_en_disco({
-
             "ultima_ejecucion":
                 self.ultima_ejecucion,
 
@@ -360,7 +316,6 @@ class Historial:
 # ============================================================
 
 def es_noticia_slrc(titulo, link):
-
     texto = limpiar_texto(
         f"{titulo} {link}"
     )
@@ -394,7 +349,6 @@ def es_noticia_slrc(titulo, link):
     ]
 
     for ciudad in ciudades_excluidas:
-
         if ciudad in texto:
 
             if (
@@ -403,7 +357,6 @@ def es_noticia_slrc(titulo, link):
                 and "golfo de santa clara" not in texto
                 and "luis b sanchez" not in texto
             ):
-
                 return False
 
     return any(
@@ -417,7 +370,6 @@ def es_noticia_slrc(titulo, link):
 # ============================================================
 
 def convertir_fecha(fecha_texto):
-
     if not fecha_texto:
         return None
 
@@ -426,9 +378,7 @@ def convertir_fecha(fecha_texto):
     ).strip()
 
     try:
-
         if fecha_texto.endswith("Z"):
-
             fecha_texto = (
                 fecha_texto[:-1]
                 + "+00:00"
@@ -439,7 +389,6 @@ def convertir_fecha(fecha_texto):
         )
 
         if fecha.tzinfo is None:
-
             fecha = fecha.replace(
                 tzinfo=TZ
             )
@@ -450,7 +399,6 @@ def convertir_fecha(fecha_texto):
         pass
 
     try:
-
         fecha = datetime.strptime(
             fecha_texto,
             "%Y-%m-%d"
@@ -461,19 +409,16 @@ def convertir_fecha(fecha_texto):
         )
 
     except (ValueError, TypeError):
-
         return None
 
 
 def extraer_fecha_json_ld(soup):
-
     scripts = soup.find_all(
         "script",
         type="application/ld+json"
     )
 
     for script in scripts:
-
         texto = script.get_text(
             " ",
             strip=True
@@ -485,7 +430,6 @@ def extraer_fecha_json_ld(soup):
         )
 
         for fecha_texto in coincidencias:
-
             fecha = convertir_fecha(
                 fecha_texto
             )
@@ -497,9 +441,7 @@ def extraer_fecha_json_ld(soup):
 
 
 def obtener_fecha_articulo(link):
-
     try:
-
         r = requests.get(
             link,
             headers=HEADERS,
@@ -524,7 +466,6 @@ def obtener_fecha_articulo(link):
         ]
 
         for meta_info in metas:
-
             meta = soup.find(
                 "meta",
                 attrs=meta_info
@@ -534,7 +475,6 @@ def obtener_fecha_articulo(link):
                 meta
                 and meta.get("content")
             ):
-
                 fecha = convertir_fecha(
                     meta.get("content")
                 )
@@ -552,7 +492,6 @@ def obtener_fecha_articulo(link):
         return None
 
     except requests.exceptions.RequestException as error:
-
         log.warning(
             f"No se pudo obtener fecha "
             f"de {link}: {error}"
@@ -562,33 +501,23 @@ def obtener_fecha_articulo(link):
 
 
 def es_fecha_aceptable(noticia):
-
     fecha = obtener_fecha_articulo(
         noticia["link"]
     )
 
     hoy = datetime.now(TZ).date()
-
-    ayer = (
-        hoy
-        - timedelta(days=1)
-    )
+    ayer = hoy - timedelta(days=1)
 
     if fecha:
-
         noticia["fecha"] = fecha
 
         if ACEPTAR_HOY_Y_AYER:
-
-            return (
-                fecha.date()
-                in (hoy, ayer)
+            return fecha.date() in (
+                hoy,
+                ayer
             )
 
-        return (
-            fecha.date()
-            == hoy
-        )
+        return fecha.date() == hoy
 
     log.info(
         "Sin fecha detectable, "
@@ -603,9 +532,7 @@ def es_fecha_aceptable(noticia):
 # ============================================================
 
 def obtener_og_image(link):
-
     try:
-
         r = requests.get(
             link,
             headers=HEADERS,
@@ -620,7 +547,10 @@ def obtener_og_image(link):
             "html.parser"
         )
 
-        # Open Graph
+        # ----------------------------------------------------
+        # 1. og:image
+        # ----------------------------------------------------
+
         meta = soup.find(
             "meta",
             attrs={
@@ -632,13 +562,48 @@ def obtener_og_image(link):
             meta
             and meta.get("content")
         ):
-
-            return urljoin(
+            imagen = urljoin(
                 link,
                 meta["content"].strip()
             )
 
-        # Twitter image como alternativa
+            log.info(
+                f"og:image encontrada: {imagen}"
+            )
+
+            return imagen
+
+        # ----------------------------------------------------
+        # 2. og:image:secure_url
+        # ----------------------------------------------------
+
+        meta = soup.find(
+            "meta",
+            attrs={
+                "property":
+                    "og:image:secure_url"
+            }
+        )
+
+        if (
+            meta
+            and meta.get("content")
+        ):
+            imagen = urljoin(
+                link,
+                meta["content"].strip()
+            )
+
+            log.info(
+                f"og:image:secure_url encontrada: {imagen}"
+            )
+
+            return imagen
+
+        # ----------------------------------------------------
+        # 3. twitter:image
+        # ----------------------------------------------------
+
         meta = soup.find(
             "meta",
             attrs={
@@ -650,17 +615,52 @@ def obtener_og_image(link):
             meta
             and meta.get("content")
         ):
-
-            return urljoin(
+            imagen = urljoin(
                 link,
                 meta["content"].strip()
             )
 
-    except requests.exceptions.RequestException as error:
+            log.info(
+                f"twitter:image encontrada: {imagen}"
+            )
 
-        log.debug(
-            "No se pudo obtener "
-            f"imagen de {link}: {error}"
+            return imagen
+
+        # ----------------------------------------------------
+        # 4. twitter:image:src
+        # ----------------------------------------------------
+
+        meta = soup.find(
+            "meta",
+            attrs={
+                "name":
+                    "twitter:image:src"
+            }
+        )
+
+        if (
+            meta
+            and meta.get("content")
+        ):
+            imagen = urljoin(
+                link,
+                meta["content"].strip()
+            )
+
+            log.info(
+                f"twitter:image:src encontrada: {imagen}"
+            )
+
+            return imagen
+
+        log.warning(
+            f"No se encontró imagen social para: {link}"
+        )
+
+    except requests.exceptions.RequestException as error:
+        log.warning(
+            f"No se pudo obtener imagen "
+            f"de {link}: {error}"
         )
 
     return None
@@ -671,17 +671,14 @@ def obtener_og_image(link):
 # ============================================================
 
 def eliminar_duplicados(lista):
-
     unicas = []
 
     for noticia in lista:
-
         repetida = False
 
         for existente in unicas:
 
             if noticia["link"] == existente["link"]:
-
                 repetida = True
                 break
 
@@ -689,12 +686,10 @@ def eliminar_duplicados(lista):
                 noticia["titulo"],
                 existente["titulo"]
             ):
-
                 repetida = True
                 break
 
         if not repetida:
-
             unicas.append(
                 noticia
             )
@@ -710,7 +705,6 @@ def construir_url_absoluta(
     base_url,
     href
 ):
-
     if not href:
         return None
 
@@ -729,7 +723,6 @@ def construir_url_absoluta(
 
 
 def parece_articulo(link):
-
     if not link:
         return False
 
@@ -757,13 +750,11 @@ def parece_articulo(link):
 
 
 def obtener_noticias(historial):
-
     candidatas = []
 
     for fuente in FUENTES:
 
         try:
-
             log.info(
                 f"Leyendo: "
                 f"{fuente['nombre']}"
@@ -833,12 +824,10 @@ def obtener_noticias(historial):
                 if historial.ya_fue_enviada(
                     noticia
                 ):
-
                     log.info(
                         "Repetida, se omite: "
                         f"{titulo}"
                     )
-
                     continue
 
                 candidatas.append(
@@ -846,7 +835,6 @@ def obtener_noticias(historial):
                 )
 
         except requests.exceptions.RequestException as error:
-
             log.warning(
                 "Error de red en "
                 f"{fuente['nombre']}: "
@@ -854,14 +842,12 @@ def obtener_noticias(historial):
             )
 
         except Exception as error:
-
             log.exception(
                 "Error inesperado en "
                 f"{fuente['nombre']}: "
                 f"{error}"
             )
 
-    # Eliminar duplicados entre fuentes y secciones
     candidatas = eliminar_duplicados(
         candidatas
     )
@@ -873,7 +859,6 @@ def obtener_noticias(historial):
         if es_fecha_aceptable(
             noticia
         ):
-
             noticia["imagen"] = (
                 obtener_og_image(
                     noticia["link"]
@@ -899,47 +884,37 @@ def obtener_noticias(historial):
 # TELEGRAM
 # ============================================================
 
-def validar_respuesta_telegram(
-    response
-):
-
+def validar_respuesta_telegram(response):
     log.info(
         f"Telegram status: "
         f"{response.status_code}"
     )
 
     if response.status_code != 200:
-
         log.error(
             "Telegram respondió "
             f"con error: {response.text}"
         )
-
         return False
 
     try:
-
         payload = response.json()
 
     except ValueError:
-
         log.error(
             "Telegram devolvió "
             "respuesta inválida."
         )
-
         return False
 
     if not payload.get(
         "ok",
         False
     ):
-
         log.error(
             f"Telegram ok=false: "
             f"{payload}"
         )
-
         return False
 
     return True
@@ -949,20 +924,16 @@ def enviar_mensaje(
     texto,
     mostrar_preview=False
 ):
-
     url = (
         "https://api.telegram.org/"
         f"bot{TOKEN}/sendMessage"
     )
 
     try:
-
         datos = {
             "chat_id": CHAT_ID,
             "text": texto,
             "parse_mode": "HTML",
-
-            # False = Telegram muestra la vista previa
             "disable_web_page_preview":
                 not mostrar_preview
         }
@@ -978,10 +949,89 @@ def enviar_mensaje(
         )
 
     except requests.exceptions.RequestException as error:
-
         log.error(
             "Excepción enviando "
             f"a Telegram: {error}"
+        )
+
+        return False
+
+
+# ============================================================
+# ENVIAR FOTO
+# ============================================================
+
+def enviar_foto(noticia):
+    """
+    Envía directamente la imagen de la noticia usando sendPhoto.
+
+    Telegram descarga la URL de imagen y la muestra como fotografía.
+    """
+
+    imagen = noticia.get("imagen")
+
+    if not imagen:
+        return False
+
+    titulo = escapar_html(
+        noticia["titulo"]
+    )
+
+    fuente = escapar_html(
+        noticia["fuente"]
+    )
+
+    link = escapar_html(
+        noticia["link"]
+    )
+
+    caption = (
+        f"<b>{titulo}</b>\n"
+        f"Fuente: {fuente}\n"
+        f'<a href="{link}">Abrir noticia</a>'
+    )
+
+    url = (
+        "https://api.telegram.org/"
+        f"bot{TOKEN}/sendPhoto"
+    )
+
+    try:
+
+        datos = {
+            "chat_id": CHAT_ID,
+            "photo": imagen,
+            "caption": caption,
+            "parse_mode": "HTML"
+        }
+
+        response = requests.post(
+            url,
+            data=datos,
+            timeout=30
+        )
+
+        if validar_respuesta_telegram(
+            response
+        ):
+            log.info(
+                "Imagen enviada correctamente: "
+                f"{imagen}"
+            )
+            return True
+
+        log.warning(
+            "sendPhoto falló. "
+            "Se intentará preview normal."
+        )
+
+        return False
+
+    except requests.exceptions.RequestException as error:
+
+        log.warning(
+            "Error enviando imagen: "
+            f"{error}"
         )
 
         return False
@@ -993,6 +1043,19 @@ def enviar_mensaje(
 
 def enviar_noticia(noticia):
 
+    # --------------------------------------------------------
+    # 1. Si existe imagen, intentar sendPhoto
+    # --------------------------------------------------------
+
+    if noticia.get("imagen"):
+
+        if enviar_foto(noticia):
+            return True
+
+    # --------------------------------------------------------
+    # 2. Fallback: mensaje normal con preview
+    # --------------------------------------------------------
+
     titulo = escapar_html(
         noticia["titulo"]
     )
@@ -1000,12 +1063,6 @@ def enviar_noticia(noticia):
     fuente = escapar_html(
         noticia["fuente"]
     )
-
-    # El URL directo permite a Telegram obtener:
-    # og:image
-    # og:title
-    # og:description
-    # y generar la vista previa.
 
     link = escapar_html(
         noticia["link"]
@@ -1017,28 +1074,15 @@ def enviar_noticia(noticia):
         f"Link: {link}"
     )
 
-    enviado = enviar_mensaje(
+    log.info(
+        "Usando fallback con "
+        "vista previa automática de Telegram."
+    )
+
+    return enviar_mensaje(
         mensaje,
         mostrar_preview=True
     )
-
-    if enviado:
-
-        if noticia.get("imagen"):
-
-            log.info(
-                "Enviada con imagen detectada: "
-                f"{noticia['imagen']}"
-            )
-
-        else:
-
-            log.info(
-                "Enviada. Telegram intentará "
-                "generar la vista previa."
-            )
-
-    return enviado
 
 
 # ============================================================
@@ -1047,28 +1091,16 @@ def enviar_noticia(noticia):
 
 def main():
 
-    # --------------------------------------------------------
-    # Verificar TOKEN
-    # --------------------------------------------------------
-
     if not TOKEN:
-
         log.error(
             "Falta configurar TOKEN."
         )
-
         return
 
-    # --------------------------------------------------------
-    # Verificar CHAT_ID
-    # --------------------------------------------------------
-
     if not CHAT_ID:
-
         log.error(
             "Falta configurar CHAT_ID."
         )
-
         return
 
     log.info(
@@ -1078,23 +1110,14 @@ def main():
 
     historial = Historial()
 
-    # --------------------------------------------------------
-    # Registrar que el bot corrió
-    # --------------------------------------------------------
-
+    # Registrar ejecución aunque no haya noticias
     historial.guardar(
         encontrados=0,
         enviados=0
     )
 
-    # --------------------------------------------------------
-    # Buscar noticias
-    # --------------------------------------------------------
-
-    noticias_a_enviar = (
-        obtener_noticias(
-            historial
-        )
+    noticias_a_enviar = obtener_noticias(
+        historial
     )
 
     historial.guardar(
@@ -1104,17 +1127,11 @@ def main():
         enviados=0
     )
 
-    # --------------------------------------------------------
-    # Si no hay noticias, terminar
-    # --------------------------------------------------------
-
     if not noticias_a_enviar:
-
         log.info(
             "No hay noticias nuevas "
             "para publicar."
         )
-
         return
 
     # ========================================================
@@ -1132,13 +1149,11 @@ def main():
         f"<b>Fecha:</b> {ahora}"
     )
 
-    # El encabezado no genera preview
     enviar_mensaje(
         encabezado,
         mostrar_preview=False
     )
 
-    # Pausa antes de comenzar las noticias
     time.sleep(2)
 
     # ========================================================
@@ -1156,15 +1171,12 @@ def main():
 
         if enviado:
 
-            # Registrar la noticia
             historial.registrar(
                 noticia
             )
 
             total_enviadas += 1
 
-            # Guardar inmediatamente después
-            # de cada envío exitoso.
             historial.guardar(
                 encontrados=len(
                     noticias_a_enviar
@@ -1182,7 +1194,6 @@ def main():
                 f"{noticia['titulo']}"
             )
 
-        # Evitar demasiadas solicitudes consecutivas
         time.sleep(1)
 
     # ========================================================
