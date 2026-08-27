@@ -1,4 +1,7 @@
 {
+  "ultima_ejecucion": null,
+  "ultimo_total_encontrado": 0,
+  "ultimo_total_enviado": 0,
   "links": [],
   "titulos": []
 }
