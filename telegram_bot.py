@@ -75,6 +75,12 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
 HEARTBEAT = os.getenv("HEARTBEAT", "0") == "1"
+
+# foto    = sendPhoto con el og:image del artículo (recomendado, determinista)
+# preview = sendMessage y que Telegram arme la vista previa (frágil: depende
+#           de que el crawler de Telegram pueda leer el sitio)
+# texto   = sin imagen
+MODO_IMAGEN = os.getenv("MODO_IMAGEN", "foto").lower()
 VENTANA_HORAS = int(os.getenv("VENTANA_HORAS", "30"))
 MIN_LARGO_TITULO = int(os.getenv("MIN_LARGO_TITULO", "30"))
 UMBRAL_SIMILITUD_TITULO = float(os.getenv("UMBRAL_SIMILITUD", "0.90"))
@@ -342,7 +348,54 @@ MESES = {
     "noviembre": 11, "diciembre": 12,
 }
 
-_cache_fechas = {}
+_cache_meta = {}
+
+META_IMAGEN = [
+    {"property": "og:image"},
+    {"property": "og:image:secure_url"},
+    {"name": "twitter:image"},
+    {"name": "twitter:image:src"},
+    {"itemprop": "image"},
+]
+
+# Telegram no acepta SVG ni data URIs en sendPhoto
+IMAGEN_NO_VALIDA = re.compile(r"^data:|\.svg(\?|$)", re.I)
+
+
+def _imagen_desde_soup(soup, base_url):
+    """Extrae el og:image del artículo. Se obtiene en el MISMO GET que ya se
+    hace para leer la fecha, así que no agrega latencia ni tráfico."""
+    for meta in META_IMAGEN:
+        tag = soup.find("meta", attrs=meta)
+        if not (tag and tag.get("content")):
+            continue
+        url = construir_url_absoluta(base_url, tag["content"].strip())
+        if url and not IMAGEN_NO_VALIDA.search(url):
+            return url
+
+    # Fallback: imagen declarada en el JSON-LD del artículo
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(tag.string or tag.get_text() or "")
+        except (ValueError, TypeError):
+            continue
+        pendientes = data if isinstance(data, list) else [data]
+        while pendientes:
+            obj = pendientes.pop()
+            if not isinstance(obj, dict):
+                continue
+            if isinstance(obj.get("@graph"), list):
+                pendientes.extend(obj["@graph"])
+            img = obj.get("image")
+            if isinstance(img, dict):
+                img = img.get("url")
+            elif isinstance(img, list) and img:
+                img = img[0].get("url") if isinstance(img[0], dict) else img[0]
+            if isinstance(img, str):
+                url = construir_url_absoluta(base_url, img.strip())
+                if url and not IMAGEN_NO_VALIDA.search(url):
+                    return url
+    return None
 
 
 def _a_datetime(valor):
@@ -407,15 +460,24 @@ def _fecha_desde_jsonld(soup):
     return None
 
 
-def obtener_fecha_noticia(link):
-    if link in _cache_fechas:
-        return _cache_fechas[link]
+def obtener_metadatos(link):
+    """Un solo GET por artículo del que se extraen fecha E imagen.
+    Devuelve {"fecha": datetime|None, "imagen": str|None}."""
+    if link in _cache_meta:
+        return _cache_meta[link]
 
     fecha = None
+    imagen = None
     try:
         r = SESION.get(link, timeout=TIMEOUT_SCRAPE)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, "html.parser")
+
+        imagen = _imagen_desde_soup(soup, link)
+        if imagen:
+            log.debug(f"  og:image: {imagen}")
+        else:
+            log.debug(f"  sin og:image: {link}")
 
         # 1) meta tags
         for meta in (
@@ -453,10 +515,11 @@ def obtener_fecha_noticia(link):
                 log.debug(f"  fecha via texto (baja confianza): {fecha.isoformat()}")
 
     except requests.exceptions.RequestException as error:
-        log.warning(f"Error obteniendo fecha de {link}: {error}")
+        log.warning(f"Error leyendo metadatos de {link}: {error}")
 
-    _cache_fechas[link] = fecha
-    return fecha
+    meta = {"fecha": fecha, "imagen": imagen}
+    _cache_meta[link] = meta
+    return meta
 
 
 def dentro_de_ventana(fecha_noticia):
@@ -543,7 +606,8 @@ def obtener_noticias(historial):
                     stats["ya_enviada"] += 1
                     continue
 
-                fecha = obtener_fecha_noticia(href)
+                meta = obtener_metadatos(href)
+                fecha = meta["fecha"]
                 if fecha is None:
                     stats["sin_fecha"] += 1
                     log.info(f"  sin fecha detectable: {titulo[:70]}")
@@ -555,6 +619,7 @@ def obtener_noticias(historial):
                     continue
 
                 candidata["fecha"] = fecha
+                candidata["imagen"] = meta["imagen"]
                 stats["candidatas"] += 1
                 noticias.append(candidata)
 
@@ -642,37 +707,81 @@ def verificar_destino():
         return False
 
 
-def enviar_mensaje(texto):
-    if DRY_RUN:
-        log.info(f"[DRY-RUN] no enviado:\n{texto}")
-        return True
+CAPTION_MAX = 1024      # límite de Telegram para el caption de sendPhoto
+TEXTO_MAX = 4096        # límite para sendMessage
 
+
+def _post_telegram(metodo, data):
+    """POST con manejo de 429 (retry_after) y backoff."""
     for intento in range(3):
         try:
-            r = SESION.post(
-                API.format(token=TOKEN, metodo="sendMessage"),
-                data={
-                    "chat_id": CHAT_ID,
-                    "text": texto,
-                    "parse_mode": "MarkdownV2",
-                    "disable_web_page_preview": False,
-                },
-                timeout=TIMEOUT_TELEGRAM,
-            )
+            r = SESION.post(API.format(token=TOKEN, metodo=metodo),
+                            data=data, timeout=TIMEOUT_TELEGRAM)
             if r.status_code == 429:
                 espera = r.json().get("parameters", {}).get("retry_after", 5)
                 log.warning(f"Rate limit de Telegram, esperando {espera}s")
                 time.sleep(espera + 1)
                 continue
-
-            ok, _ = _validar_respuesta(r)
-            return ok
-
+            return _validar_respuesta(r)
         except requests.exceptions.RequestException as error:
-            log.error(f"Excepción enviando mensaje (intento {intento + 1}/3): {error}")
+            log.error(f"Excepción en {metodo} (intento {intento + 1}/3): {error}")
             time.sleep(2 * (intento + 1))
+    return False, None
 
-    return False
+
+def _url_para_markdown(url):
+    """Dentro de un enlace [texto](url) MarkdownV2 solo exige escapar ')' y '\\'.
+
+    Escapar puntos y guiones —como hacía la versión anterior al mandar la URL
+    en texto plano— impide que Telegram la reconozca como entidad de enlace,
+    y sin entidad no se genera vista previa ni imagen."""
+    return url.replace("\\", "\\\\").replace(")", "\\)")
+
+
+def _cuerpo(noticia, limite):
+    """Título en negritas + fuente + enlace, recortado al límite del método."""
+    pie = (f"\n{escapar_markdown(noticia['fuente'])}\n"
+           f"[Leer nota completa]({_url_para_markdown(noticia['link'])})")
+    titulo = noticia["titulo"]
+    while True:
+        cuerpo = f"*{escapar_markdown(titulo)}*{pie}"
+        if len(cuerpo) <= limite or len(titulo) <= 20:
+            return cuerpo
+        titulo = titulo[:int(len(titulo) * 0.9)].rstrip()
+
+
+def enviar_mensaje(texto):
+    if DRY_RUN:
+        log.info(f"[DRY-RUN] sendMessage:\n{texto}")
+        return True
+
+    ok, _ = _post_telegram("sendMessage", {
+        "chat_id": CHAT_ID,
+        "text": texto[:TEXTO_MAX],
+        "parse_mode": "MarkdownV2",
+        # disable_web_page_preview quedó obsoleto en Bot API 7.0.
+        # prefer_large_media fuerza la miniatura grande cuando sí hay preview.
+        "link_preview_options": json.dumps({
+            "is_disabled": False,
+            "prefer_large_media": True,
+            "show_above_text": True,
+        }),
+    })
+    return ok
+
+
+def enviar_foto(noticia):
+    if DRY_RUN:
+        log.info(f"[DRY-RUN] sendPhoto {noticia.get('imagen')}")
+        return True
+
+    ok, _ = _post_telegram("sendPhoto", {
+        "chat_id": CHAT_ID,
+        "photo": noticia["imagen"],
+        "caption": _cuerpo(noticia, CAPTION_MAX),
+        "parse_mode": "MarkdownV2",
+    })
+    return ok
 
 
 def enviar_encabezado():
@@ -681,14 +790,21 @@ def enviar_encabezado():
 
 
 def enviar_noticia(noticia):
-    mensaje = (
-        f"*{escapar_markdown(noticia['titulo'])}*\n"
-        f"Fuente: {escapar_markdown(noticia['fuente'])}\n"
-        f"Link: {escapar_markdown(noticia['link'])}"
-    )
-    if enviar_mensaje(mensaje):
-        log.info(f"Enviada: {noticia['titulo']}")
+    """Estrategia: sendPhoto si hay og:image; si Telegram no puede descargar
+    esa imagen (403 del sitio, formato raro, >5 MB) degrada a sendMessage con
+    vista previa. Nunca se pierde la noticia por culpa de la imagen."""
+    imagen = noticia.get("imagen")
+
+    if MODO_IMAGEN == "foto" and imagen:
+        if enviar_foto(noticia):
+            log.info(f"Enviada con foto: {noticia['titulo']}")
+            return True
+        log.warning(f"sendPhoto falló para {imagen} · se degrada a texto")
+
+    if enviar_mensaje(_cuerpo(noticia, TEXTO_MAX)):
+        log.info(f"Enviada{' (sin imagen)' if not imagen else ''}: {noticia['titulo']}")
         return True
+
     log.warning(f"No se pudo enviar (reintento en próxima corrida): {noticia['titulo']}")
     return False
 
@@ -723,7 +839,8 @@ def main():
     if DRY_RUN:
         for n in noticias:
             log.info(f"  [{n['fuente']}] {n['fecha'].strftime('%Y-%m-%d %H:%M')} · {n['titulo']}")
-            log.info(f"    {n['link']}")
+            log.info(f"    link:   {n['link']}")
+            log.info(f"    imagen: {n.get('imagen') or 'NO DETECTADA'}")
         return
 
     enviar_encabezado()
