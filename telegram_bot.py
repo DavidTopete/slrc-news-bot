@@ -1,863 +1,192 @@
-#!/usr/bin/env python3
-"""
-SLRC News Bot - noticias de San Luis Río Colorado hacia Telegram.
-
-Correcciones respecto a la versión anterior del repo:
-
-  1. HISTORIAL ORDENADO. `self.links` era un set; `list(set)` no tiene orden
-     estable (PYTHONHASHSEED), por lo que el truncado [-MAX_HISTORIAL:]
-     conservaba 300 links AL AZAR en cada corrida: los links descartados se
-     re-enviaban y cada escritura generaba un diff completo en git.
-     Ahora se usa lista ordenada + set auxiliar solo para búsqueda O(1).
-
-  2. FILTRO SLRC vs SLUG. limpiar_texto() convierte '/' en espacio, pero el
-     slug queda como un token único ('sanluisriocolorado', 'tribunadesanluis'),
-     así que la clave "san luis rio colorado" NUNCA coincidía con la URL.
-     Ahora se compara también contra el texto compactado sin espacios.
-
-  3. VENTANA TEMPORAL. es_fecha_valida() exigía fecha == hoy. Con el cron de
-     GitHub Actions en UTC y America/Hermosillo en UTC-7 fijo (sin DST), la
-     ventana quedaba desalineada. Ahora es una ventana móvil en horas.
-
-  4. DETECCIÓN DE FECHA. Se agregó JSON-LD (schema.org datePublished), que es
-     lo que emiten Arc XP (El Imparcial) y OEM, y <time datetime="...">.
-     El fallback sobre el texto completo de la página quedó como último
-     recurso porque captura cualquier fecha del pie de página.
-
-  5. OBSERVABILIDAD. Contadores de embudo por fuente: indican exactamente en
-     qué etapa se descartan las noticias en lugar de un "no hay noticias".
-
-  6. VERIFICACIÓN DE DESTINO. getMe + getChat al arranque: confirma token y
-     que CHAT_ID apunta al chat esperado (causa típica de "el bot corre pero
-     no veo nada": CHAT_ID de canal sin el prefijo -100).
-
-  7. Manejo de HTTP 429 (retry_after), reintentos con backoff y sesión
-     reutilizada con keep-alive.
-
-Variables de entorno:
-  TOKEN, CHAT_ID           credenciales (requeridas)
-  DRY_RUN=1                no envía nada, solo reporta (default 0)
-  VENTANA_HORAS=30         antigüedad máxima aceptada (default 30)
-  MIN_LARGO_TITULO=30      longitud mínima del ancla (default 30)
-  UMBRAL_SIMILITUD=0.90    umbral de deduplicación por título (default 0.90)
-  HEARTBEAT=1              avisa a Telegram aunque no haya noticias (default 0)
-  LOG_LEVEL=DEBUG          verbosidad (default INFO)
-"""
-
-import json
-import logging
-import os
-import re
-import time
-from datetime import datetime, timedelta
-from difflib import SequenceMatcher
-from urllib.parse import urlparse
-from zoneinfo import ZoneInfo
-
 import requests
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from datetime import datetime
+import time
+import json
+import os
+import re
+from difflib import SequenceMatcher
 
 # ========================
-# CONFIG
+# CONFIGURACIÓN
 # ========================
-
-logging.basicConfig(
-    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-log = logging.getLogger("slrc_news_bot")
-
 TOKEN = os.getenv("TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
-DRY_RUN = os.getenv("DRY_RUN", "0") == "1"
-HEARTBEAT = os.getenv("HEARTBEAT", "0") == "1"
-
-# foto    = sendPhoto con el og:image del artículo (recomendado, determinista)
-# preview = sendMessage y que Telegram arme la vista previa (frágil: depende
-#           de que el crawler de Telegram pueda leer el sitio)
-# texto   = sin imagen
-MODO_IMAGEN = os.getenv("MODO_IMAGEN", "foto").lower()
-VENTANA_HORAS = int(os.getenv("VENTANA_HORAS", "30"))
-MIN_LARGO_TITULO = int(os.getenv("MIN_LARGO_TITULO", "30"))
-UMBRAL_SIMILITUD_TITULO = float(os.getenv("UMBRAL_SIMILITUD", "0.90"))
-
 ARCHIVO_ENVIADAS = "noticias_enviadas.json"
-TZ = ZoneInfo("America/Hermosillo")
-
-MAX_HISTORIAL = 300
-MAX_NOTICIAS_POR_CORRIDA = 10
-PAUSA_ENTRE_ENVIOS = 1.2          # s, margen contra el rate limit de Telegram
-TIMEOUT_SCRAPE = 15               # s
-TIMEOUT_TELEGRAM = 20             # s
 
 FUENTES = [
-    {"nombre": "Tribuna Inicio",      "url": "https://oem.com.mx/tribunadesanluis/"},
-    {"nombre": "Tribuna Local",       "url": "https://oem.com.mx/tribunadesanluis/local/"},
-    {"nombre": "Tribuna Policiaca",   "url": "https://oem.com.mx/tribunadesanluis/policiaca/"},
-    {"nombre": "Tribuna Valle",       "url": "https://oem.com.mx/tribunadesanluis/tags/temas/valle"},
-    {"nombre": "El Imparcial SLRC",   "url": "https://www.elimparcial.com/sonora/sanluisriocolorado/"},
-    {"nombre": "El Imparcial Sonora", "url": "https://www.elimparcial.com/sonora/"},
+    {"nombre": "Tribuna Inicio", "url": "https://oem.com.mx/tribunadesanluis/"},
+    {"nombre": "Tribuna Local", "url": "https://oem.com.mx/tribunadesanluis/local/"},
+    {"nombre": "Tribuna Policiaca", "url": "https://oem.com.mx/tribunadesanluis/policiaca/"},
+    {"nombre": "Tribuna Valle", "url": "https://oem.com.mx/tribunadesanluis/tags/temas/valle"},
+    {"nombre": "El Imparcial SLRC", "url": "https://www.elimparcial.com/sonora/sanluisriocolorado/"},
+    {"nombre": "El Imparcial Sonora", "url": "https://www.elimparcial.com/sonora/"}
 ]
 
-# Fuentes cuya sección ya es local por definición: no se les exige el filtro
-# de keywords, solo la exclusión de otras ciudades.
-FUENTES_YA_LOCALES = {"Tribuna Inicio", "Tribuna Local", "Tribuna Policiaca",
-                      "Tribuna Valle", "El Imparcial SLRC"}
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
-}
-
-ETAPAS = [
-    "anclas_totales",
-    "titulo_corto",
-    "url_invalida",
-    "no_es_articulo",
-    "filtro_slrc",
-    "ya_enviada",
-    "sin_fecha",
-    "fuera_de_ventana",
-    "candidatas",
-]
-
-
-def crear_sesion():
-    """Sesión con keep-alive y reintentos automáticos ante 5xx/429."""
-    sesion = requests.Session()
-    sesion.headers.update(HEADERS)
-    retry = Retry(
-        total=3,
-        backoff_factor=1.5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["GET"],
-    )
-    sesion.mount("https://", HTTPAdapter(max_retries=retry, pool_maxsize=10))
-    return sesion
-
-
-SESION = crear_sesion()
-
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 
 # ========================
 # UTILIDADES
 # ========================
-
-def ahora_slrc():
-    return datetime.now(TZ)
-
-
-def nuevo_contador():
-    return {etapa: 0 for etapa in ETAPAS}
-
-
-def imprimir_embudo(nombre, stats):
-    resumen = " | ".join(f"{k}={v}" for k, v in stats.items() if v)
-    log.info(f"Embudo [{nombre}]: {resumen or 'sin datos'}")
-
-
-def escapar_markdown(texto):
-    """Escapa caracteres reservados de MarkdownV2.
-    El backslash debe escaparse PRIMERO o se duplica el escape posterior."""
-    texto = str(texto).replace("\\", "\\\\")
-    for c in r"_*[]()~`>#+-=|{}.!":
-        texto = texto.replace(c, f"\\{c}")
+def limpiar_texto(texto):
+    texto = texto.lower()
+    texto = texto.replace("á","a").replace("é","e").replace("í","i")
+    texto = texto.replace("ó","o").replace("ú","u").replace("ñ","n")
+    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
+    texto = re.sub(r"\s+", " ", texto).strip()
     return texto
 
 
-def limpiar_texto(texto):
-    texto = texto.lower()
-    for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"),
-                 ("ú", "u"), ("ü", "u"), ("ñ", "n")):
-        texto = texto.replace(a, b)
-    texto = re.sub(r"[^a-z0-9\s]", " ", texto)
-    return re.sub(r"\s+", " ", texto).strip()
+def es_noticia_slrc(titulo, link):
+    texto = limpiar_texto(titulo + " " + link)
+
+    claves_fuertes = [
+        "san luis rio colorado","slrc","san luis sonora",
+        "san luis rc","san luis r c"
+    ]
+
+    claves_contexto = [
+        "garita","aduana","frontera","valle de san luis",
+        "riito","sonoyta","golfo de santa clara",
+        "luis b sanchez","colonia","ejido","ayuntamiento","policia"
+    ]
+
+    return any(c in texto for c in claves_fuertes + claves_contexto)
 
 
 def titulo_parecido(t1, t2):
-    return SequenceMatcher(None, limpiar_texto(t1),
-                           limpiar_texto(t2)).ratio() >= UMBRAL_SIMILITUD_TITULO
+    return SequenceMatcher(None, limpiar_texto(t1), limpiar_texto(t2)).ratio() > 0.82
 
-
-# ========================
-# FILTRO SLRC
-# ========================
-
-CLAVES_SLRC = [
-    "san luis rio colorado",
-    "slrc",
-    "san luis sonora",
-    "san luis rc",
-]
-
-CLAVES_LOCALES = [
-    "ayuntamiento", "cabildo", "policia municipal", "bomberos",
-    "garita", "aduana", "valle de san luis", "golfo de santa clara",
-    "luis b sanchez", "riito", "ejido", "mexicali san luis", "san luis",
-]
-
-CIUDADES_EXCLUIDAS = [
-    "hermosillo", "nogales", "guaymas", "obregon", "caborca", "navojoa",
-    "cananea", "agua prieta", "puerto penasco", "magdalena", "sonoyta",
-    "sinaloa", "chihuahua", "tijuana",
-]
-
-# Rutas que no son artículos (evita gastar un GET por cada una para leer fecha)
-PATRONES_NO_ARTICULO = re.compile(
-    r"/(tags?|autor|author|seccion|categoria|suscri|newsletter|clasificados|"
-    r"aviso-de-privacidad|contacto|login|registro|video|galeria)s?(/|$)"
-)
-
-
-def _contexto_filtro(titulo, link):
-    """Devuelve (texto_espaciado, texto_compactado).
-
-    El compactado permite que 'sanluisriocolorado' en la URL coincida con la
-    clave multipalabra 'san luis rio colorado'. Sin esto el link no aportaba
-    ninguna señal al filtro."""
-    base = limpiar_texto(f"{titulo} {link}")
-    return base, base.replace(" ", "")
-
-
-def _contiene(clave, base, compacto):
-    return clave in base or clave.replace(" ", "") in compacto
-
-
-def es_noticia_slrc(titulo, link, fuente_ya_local=False, explicar=False):
-    base, compacto = _contexto_filtro(titulo, link)
-
-    es_slrc = any(_contiene(c, base, compacto) for c in CLAVES_SLRC)
-
-    if not es_slrc:
-        for ciudad in CIUDADES_EXCLUIDAS:
-            if _contiene(ciudad, base, compacto):
-                if explicar:
-                    log.debug(f"  rechazo (ciudad '{ciudad}'): {titulo[:70]}")
-                return False
-
-    if es_slrc or fuente_ya_local:
-        return True
-
-    coincidencias = [p for p in CLAVES_LOCALES if _contiene(p, base, compacto)]
-    if len(coincidencias) >= 2:
-        return True
-
-    if explicar:
-        log.debug(f"  rechazo ({len(coincidencias)} claves {coincidencias}): {titulo[:70]}")
-    return False
-
-
-def parece_articulo(url):
-    ruta = urlparse(url).path
-    if PATRONES_NO_ARTICULO.search(ruta):
-        return False
-    # Un artículo real tiene un slug con varias palabras
-    return len(ruta.strip("/").split("/")) >= 2 and len(ruta) > 25
-
-
-# ========================
-# HISTORIAL
-# ========================
 
 def cargar_enviadas():
     if not os.path.exists(ARCHIVO_ENVIADAS):
-        log.warning(f"{ARCHIVO_ENVIADAS} no existe: historial vacío.")
         return {"links": [], "titulos": []}
-    try:
-        with open(ARCHIVO_ENVIADAS, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            raise ValueError("estructura inesperada")
-        data.setdefault("links", [])
-        data.setdefault("titulos", [])
-        return data
-    except Exception as error:
-        log.error(f"Error leyendo historial, se respalda y reinicia: {error}")
-        try:
-            os.replace(ARCHIVO_ENVIADAS, f"{ARCHIVO_ENVIADAS}.bak_{int(time.time())}")
-        except OSError:
-            pass
-        return {"links": [], "titulos": []}
+    with open(ARCHIVO_ENVIADAS, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
-class Historial:
-    """Historial en memoria, cargado una sola vez por corrida.
+def guardar_enviada(noticia):
+    data = cargar_enviadas()
+    data["links"].append(noticia["link"])
+    data["titulos"].append(noticia["titulo"])
+    data["links"] = data["links"][-300:]
+    data["titulos"] = data["titulos"][-300:]
+    with open(ARCHIVO_ENVIADAS, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-    `_links_lista` mantiene el ORDEN de inserción (para un truncado estable y
-    diffs de git limpios); `_links_set` da búsqueda O(1)."""
 
-    def __init__(self):
-        data = cargar_enviadas()
-        self._links_lista = list(dict.fromkeys(data["links"]))   # dedup preservando orden
-        self._links_set = set(self._links_lista)
-        self.titulos = list(dict.fromkeys(data["titulos"]))
-        self._hay_cambios = False
-        log.info(f"Historial: {len(self._links_lista)} links, {len(self.titulos)} títulos")
-
-    def ya_fue_enviada(self, noticia):
-        if noticia["link"] in self._links_set:
+def ya_fue_enviada(noticia):
+    data = cargar_enviadas()
+    if noticia["link"] in data["links"]:
+        return True
+    for t in data["titulos"]:
+        if titulo_parecido(noticia["titulo"], t):
             return True
-        for guardado in self.titulos:
-            if titulo_parecido(noticia["titulo"], guardado):
-                log.debug(f"  dedup contra: {guardado[:70]}")
-                return True
-        return False
-
-    def registrar(self, noticia):
-        if noticia["link"] not in self._links_set:
-            self._links_set.add(noticia["link"])
-            self._links_lista.append(noticia["link"])
-            self._hay_cambios = True
-        if noticia["titulo"] not in self.titulos:
-            self.titulos.append(noticia["titulo"])
-            self._hay_cambios = True
-
-    def persistir_si_hay_cambios(self):
-        if not self._hay_cambios:
-            log.info("Sin cambios en el historial: no se reescribe el archivo.")
-            return
-        with open(ARCHIVO_ENVIADAS, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "links": self._links_lista[-MAX_HISTORIAL:],
-                    "titulos": self.titulos[-MAX_HISTORIAL:],
-                },
-                f, ensure_ascii=False, indent=2,
-            )
-        self._hay_cambios = False
-        log.info(f"Historial guardado: {len(self._links_lista)} links, "
-                 f"{len(self.titulos)} títulos")
-
-
-# ========================
-# FECHA
-# ========================
-
-MESES = {
-    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
-    "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
-    "noviembre": 11, "diciembre": 12,
-}
-
-_cache_meta = {}
-
-META_IMAGEN = [
-    {"property": "og:image"},
-    {"property": "og:image:secure_url"},
-    {"name": "twitter:image"},
-    {"name": "twitter:image:src"},
-    {"itemprop": "image"},
-]
-
-# Telegram no acepta SVG ni data URIs en sendPhoto
-IMAGEN_NO_VALIDA = re.compile(r"^data:|\.svg(\?|$)", re.I)
-
-
-def _imagen_desde_soup(soup, base_url):
-    """Extrae el og:image del artículo. Se obtiene en el MISMO GET que ya se
-    hace para leer la fecha, así que no agrega latencia ni tráfico."""
-    for meta in META_IMAGEN:
-        tag = soup.find("meta", attrs=meta)
-        if not (tag and tag.get("content")):
-            continue
-        url = construir_url_absoluta(base_url, tag["content"].strip())
-        if url and not IMAGEN_NO_VALIDA.search(url):
-            return url
-
-    # Fallback: imagen declarada en el JSON-LD del artículo
-    for tag in soup.find_all("script", type="application/ld+json"):
-        try:
-            data = json.loads(tag.string or tag.get_text() or "")
-        except (ValueError, TypeError):
-            continue
-        pendientes = data if isinstance(data, list) else [data]
-        while pendientes:
-            obj = pendientes.pop()
-            if not isinstance(obj, dict):
-                continue
-            if isinstance(obj.get("@graph"), list):
-                pendientes.extend(obj["@graph"])
-            img = obj.get("image")
-            if isinstance(img, dict):
-                img = img.get("url")
-            elif isinstance(img, list) and img:
-                img = img[0].get("url") if isinstance(img[0], dict) else img[0]
-            if isinstance(img, str):
-                url = construir_url_absoluta(base_url, img.strip())
-                if url and not IMAGEN_NO_VALIDA.search(url):
-                    return url
-    return None
-
-
-def _a_datetime(valor):
-    """Convierte una cadena ISO-8601 a datetime con tz local de SLRC."""
-    if not valor:
-        return None
-    try:
-        dt = datetime.fromisoformat(str(valor).replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        return None
-    return dt.astimezone(TZ) if dt.tzinfo else dt.replace(tzinfo=TZ)
-
-
-def parsear_fecha_desde_texto(texto):
-    texto = texto.lower()
-
-    m = re.search(r"(\d{4}-\d{2}-\d{2})", texto)
-    if m:
-        try:
-            return datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=TZ)
-        except ValueError:
-            pass
-
-    m = re.search(r"\b(\d{1,2}/\d{1,2}/\d{4})\b", texto)
-    if m:
-        try:
-            return datetime.strptime(m.group(1), "%d/%m/%Y").replace(tzinfo=TZ)
-        except ValueError:
-            pass
-
-    m = re.search(r"(\d{1,2})\s+de\s+([a-záéíóúñ]+)\s+de\s+(\d{4})", texto)
-    if m:
-        mes = MESES.get(limpiar_texto(m.group(2)))
-        if mes:
-            try:
-                return datetime(int(m.group(3)), mes, int(m.group(1)), tzinfo=TZ)
-            except ValueError:
-                pass
-
-    return None
-
-
-def _fecha_desde_jsonld(soup):
-    """Arc XP (El Imparcial) y OEM publican schema.org NewsArticle en JSON-LD.
-    Es la fuente de fecha más confiable de las tres."""
-    for tag in soup.find_all("script", type="application/ld+json"):
-        try:
-            data = json.loads(tag.string or tag.get_text() or "")
-        except (ValueError, TypeError):
-            continue
-
-        pendientes = data if isinstance(data, list) else [data]
-        while pendientes:
-            obj = pendientes.pop()
-            if not isinstance(obj, dict):
-                continue
-            if "@graph" in obj and isinstance(obj["@graph"], list):
-                pendientes.extend(obj["@graph"])
-            fecha = _a_datetime(obj.get("datePublished") or obj.get("dateModified"))
-            if fecha:
-                return fecha
-    return None
-
-
-def obtener_metadatos(link):
-    """Un solo GET por artículo del que se extraen fecha E imagen.
-    Devuelve {"fecha": datetime|None, "imagen": str|None}."""
-    if link in _cache_meta:
-        return _cache_meta[link]
-
-    fecha = None
-    imagen = None
-    try:
-        r = SESION.get(link, timeout=TIMEOUT_SCRAPE)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
-
-        imagen = _imagen_desde_soup(soup, link)
-        if imagen:
-            log.debug(f"  og:image: {imagen}")
-        else:
-            log.debug(f"  sin og:image: {link}")
-
-        # 1) meta tags
-        for meta in (
-            {"property": "article:published_time"},
-            {"property": "article:modified_time"},
-            {"name": "pubdate"},
-            {"name": "publish-date"},
-            {"itemprop": "datePublished"},
-        ):
-            tag = soup.find("meta", attrs=meta)
-            if tag and tag.get("content"):
-                fecha = _a_datetime(tag["content"]) or parsear_fecha_desde_texto(tag["content"])
-                if fecha:
-                    log.debug(f"  fecha via meta {meta}: {fecha.isoformat()}")
-                    break
-
-        # 2) JSON-LD
-        if fecha is None:
-            fecha = _fecha_desde_jsonld(soup)
-            if fecha:
-                log.debug(f"  fecha via JSON-LD: {fecha.isoformat()}")
-
-        # 3) <time datetime="...">
-        if fecha is None:
-            tag = soup.find("time")
-            if tag and tag.get("datetime"):
-                fecha = _a_datetime(tag["datetime"])
-                if fecha:
-                    log.debug(f"  fecha via <time>: {fecha.isoformat()}")
-
-        # 4) último recurso: texto de la página (poco confiable)
-        if fecha is None:
-            fecha = parsear_fecha_desde_texto(soup.get_text(" ", strip=True))
-            if fecha:
-                log.debug(f"  fecha via texto (baja confianza): {fecha.isoformat()}")
-
-    except requests.exceptions.RequestException as error:
-        log.warning(f"Error leyendo metadatos de {link}: {error}")
-
-    meta = {"fecha": fecha, "imagen": imagen}
-    _cache_meta[link] = meta
-    return meta
-
-
-def dentro_de_ventana(fecha_noticia):
-    """Ventana móvil en horas en lugar de 'fecha == hoy'.
-
-    El cron de GitHub Actions corre en UTC y se retrasa entre 5 y 30 min bajo
-    carga; SLRC es UTC-7 fijo. Comparar días calendario deja huecos donde el
-    bot descarta absolutamente todo."""
-    if fecha_noticia is None:
-        return False
-    if fecha_noticia.tzinfo is None:
-        fecha_noticia = fecha_noticia.replace(tzinfo=TZ)
-
-    delta = ahora_slrc() - fecha_noticia.astimezone(TZ)
-    # 2 h de tolerancia hacia el futuro por relojes/metadatos inconsistentes
-    return timedelta(hours=-2) <= delta <= timedelta(hours=VENTANA_HORAS)
+    return False
 
 
 # ========================
 # SCRAPING
 # ========================
-
-def construir_url_absoluta(base_url, href):
-    href = href.strip()
-    if href.startswith("http"):
-        return href
-    partes = urlparse(base_url)
-    if href.startswith("//"):
-        return f"{partes.scheme}:{href}"
-    if href.startswith("/"):
-        return f"{partes.scheme}://{partes.netloc}{href}"
-    return None
-
-
-def obtener_noticias(historial):
+def obtener_noticias():
     noticias = []
-    total = nuevo_contador()
-    debug = log.isEnabledFor(logging.DEBUG)
 
     for fuente in FUENTES:
-        stats = nuevo_contador()
-        ya_local = fuente["nombre"] in FUENTES_YA_LOCALES
-
         try:
-            r = SESION.get(fuente["url"], timeout=TIMEOUT_SCRAPE)
-            log.info(f"[{fuente['nombre']}] HTTP {r.status_code} · {len(r.text)} bytes")
-            r.raise_for_status()
-
+            print(f"Leyendo: {fuente['nombre']}")
+            r = requests.get(fuente["url"], headers=HEADERS, timeout=10)
             soup = BeautifulSoup(r.text, "html.parser")
-            anclas = soup.find_all("a", href=True)
-            stats["anclas_totales"] = len(anclas)
 
-            if len(anclas) < 20:
-                log.warning(f"[{fuente['nombre']}] solo {len(anclas)} anclas: "
-                            "posible render por JavaScript o bloqueo WAF.")
+            links = soup.find_all("a", href=True)
 
-            vistos = set()
-            for item in anclas:
+            for item in links:
                 titulo = item.get_text(" ", strip=True)
-                if not titulo or len(titulo) < MIN_LARGO_TITULO:
-                    stats["titulo_corto"] += 1
+                href = item["href"]
+
+                if not titulo or len(titulo) < 30:
                     continue
 
-                href = construir_url_absoluta(fuente["url"], item["href"])
-                if not href:
-                    stats["url_invalida"] += 1
+                if href.startswith("/"):
+                    base = fuente["url"].split("/")[0] + "//" + fuente["url"].split("/")[2]
+                    href = base + href
+
+                if not href.startswith("http"):
                     continue
 
-                if href in vistos:
-                    continue
-                vistos.add(href)
-
-                if not parece_articulo(href):
-                    stats["no_es_articulo"] += 1
+                if not es_noticia_slrc(titulo, href):
                     continue
 
-                if not es_noticia_slrc(titulo, href, ya_local, explicar=debug):
-                    stats["filtro_slrc"] += 1
-                    continue
+                noticias.append({
+                    "titulo": titulo,
+                    "link": href,
+                    "fuente": fuente["nombre"]
+                })
 
-                candidata = {"titulo": titulo, "link": href, "fuente": fuente["nombre"]}
-
-                if historial.ya_fue_enviada(candidata):
-                    stats["ya_enviada"] += 1
-                    continue
-
-                meta = obtener_metadatos(href)
-                fecha = meta["fecha"]
-                if fecha is None:
-                    stats["sin_fecha"] += 1
-                    log.info(f"  sin fecha detectable: {titulo[:70]}")
-                    continue
-
-                if not dentro_de_ventana(fecha):
-                    stats["fuera_de_ventana"] += 1
-                    log.info(f"  {fecha.strftime('%Y-%m-%d %H:%M')} fuera de ventana: {titulo[:70]}")
-                    continue
-
-                candidata["fecha"] = fecha
-                candidata["imagen"] = meta["imagen"]
-                stats["candidatas"] += 1
-                noticias.append(candidata)
-
-        except requests.exceptions.RequestException as e:
-            log.warning(f"Error de red en {fuente['nombre']}: {e}")
         except Exception as e:
-            log.error(f"Error inesperado en {fuente['nombre']}: {e}", exc_info=True)
+            print("Error:", e)
 
-        imprimir_embudo(fuente["nombre"], stats)
-        for k in ETAPAS:
-            total[k] += stats[k]
-
-    imprimir_embudo("TOTAL", total)
     return eliminar_duplicados(noticias)
 
 
 def eliminar_duplicados(lista):
     unicas = []
-    for noticia in lista:
-        if any(noticia["link"] == e["link"] or titulo_parecido(noticia["titulo"], e["titulo"])
-               for e in unicas):
-            continue
-        unicas.append(noticia)
-    if len(unicas) != len(lista):
-        log.info(f"Deduplicación: {len(unicas)} de {len(lista)}")
+    for n in lista:
+        repetida = False
+        for u in unicas:
+            if n["link"] == u["link"] or titulo_parecido(n["titulo"], u["titulo"]):
+                repetida = True
+                break
+        if not repetida:
+            unicas.append(n)
     return unicas
 
 
 # ========================
 # TELEGRAM
 # ========================
+def enviar_noticia(noticia, i):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    fecha = datetime.now().strftime("%d/%m/%Y")
 
-API = "https://api.telegram.org/bot{token}/{metodo}"
+    mensaje = f"""{i}. {noticia['titulo']}
+Fecha: {fecha}
+Fuente: {noticia['fuente']}
+Link: {noticia['link']}
+"""
 
-
-def _validar_respuesta(response):
-    if response.status_code != 200:
-        log.error(f"Telegram HTTP {response.status_code}: {response.text[:300]}")
-        return False, response
-    try:
-        payload = response.json()
-    except ValueError:
-        log.error(f"Respuesta no-JSON de Telegram: {response.text[:300]}")
-        return False, response
-    if not payload.get("ok", False):
-        log.error(f"Telegram ok=false: {payload}")
-        return False, response
-    return True, response
-
-
-def verificar_destino():
-    """Confirma token y, sobre todo, A QUÉ CHAT se está publicando.
-
-    Un CHAT_ID incorrecto no produce error: Telegram entrega el mensaje a otro
-    destino con ok:true. Esta verificación imprime el nombre real del chat."""
-    if not TOKEN or not CHAT_ID:
-        log.error(f"Credenciales ausentes -> TOKEN={'OK' if TOKEN else 'FALTA'} "
-                  f"CHAT_ID={'OK' if CHAT_ID else 'FALTA'}. "
-                  "Revisa el bloque env: del step en el workflow.")
-        return False
-
-    try:
-        ok, r = _validar_respuesta(
-            SESION.get(API.format(token=TOKEN, metodo="getMe"), timeout=TIMEOUT_TELEGRAM))
-        if not ok:
-            return False
-        log.info(f"Bot autenticado: @{r.json()['result'].get('username')}")
-
-        ok, r = _validar_respuesta(SESION.get(
-            API.format(token=TOKEN, metodo="getChat"),
-            params={"chat_id": CHAT_ID}, timeout=TIMEOUT_TELEGRAM))
-        if not ok:
-            log.error(f"CHAT_ID={CHAT_ID} no es alcanzable. Si es canal o "
-                      "supergrupo debe incluir el prefijo -100 y el bot debe "
-                      "ser administrador.")
-            return False
-
-        chat = r.json()["result"]
-        log.info(f"Destino: id={chat.get('id')} tipo={chat.get('type')} "
-                 f"titulo={chat.get('title') or chat.get('username')}")
-        return True
-
-    except requests.exceptions.RequestException as e:
-        log.error(f"Sin conectividad con la API de Telegram: {e}")
-        return False
-
-
-CAPTION_MAX = 1024      # límite de Telegram para el caption de sendPhoto
-TEXTO_MAX = 4096        # límite para sendMessage
-
-
-def _post_telegram(metodo, data):
-    """POST con manejo de 429 (retry_after) y backoff."""
-    for intento in range(3):
-        try:
-            r = SESION.post(API.format(token=TOKEN, metodo=metodo),
-                            data=data, timeout=TIMEOUT_TELEGRAM)
-            if r.status_code == 429:
-                espera = r.json().get("parameters", {}).get("retry_after", 5)
-                log.warning(f"Rate limit de Telegram, esperando {espera}s")
-                time.sleep(espera + 1)
-                continue
-            return _validar_respuesta(r)
-        except requests.exceptions.RequestException as error:
-            log.error(f"Excepción en {metodo} (intento {intento + 1}/3): {error}")
-            time.sleep(2 * (intento + 1))
-    return False, None
-
-
-def _url_para_markdown(url):
-    """Dentro de un enlace [texto](url) MarkdownV2 solo exige escapar ')' y '\\'.
-
-    Escapar puntos y guiones —como hacía la versión anterior al mandar la URL
-    en texto plano— impide que Telegram la reconozca como entidad de enlace,
-    y sin entidad no se genera vista previa ni imagen."""
-    return url.replace("\\", "\\\\").replace(")", "\\)")
-
-
-def _cuerpo(noticia, limite):
-    """Título en negritas + fuente + enlace, recortado al límite del método."""
-    pie = (f"\n{escapar_markdown(noticia['fuente'])}\n"
-           f"[Leer nota completa]({_url_para_markdown(noticia['link'])})")
-    titulo = noticia["titulo"]
-    while True:
-        cuerpo = f"*{escapar_markdown(titulo)}*{pie}"
-        if len(cuerpo) <= limite or len(titulo) <= 20:
-            return cuerpo
-        titulo = titulo[:int(len(titulo) * 0.9)].rstrip()
-
-
-def enviar_mensaje(texto):
-    if DRY_RUN:
-        log.info(f"[DRY-RUN] sendMessage:\n{texto}")
-        return True
-
-    ok, _ = _post_telegram("sendMessage", {
+    requests.post(url, data={
         "chat_id": CHAT_ID,
-        "text": texto[:TEXTO_MAX],
-        "parse_mode": "MarkdownV2",
-        # disable_web_page_preview quedó obsoleto en Bot API 7.0.
-        # prefer_large_media fuerza la miniatura grande cuando sí hay preview.
-        "link_preview_options": json.dumps({
-            "is_disabled": False,
-            "prefer_large_media": True,
-            "show_above_text": True,
-        }),
+        "text": mensaje
     })
-    return ok
 
-
-def enviar_foto(noticia):
-    if DRY_RUN:
-        log.info(f"[DRY-RUN] sendPhoto {noticia.get('imagen')}")
-        return True
-
-    ok, _ = _post_telegram("sendPhoto", {
-        "chat_id": CHAT_ID,
-        "photo": noticia["imagen"],
-        "caption": _cuerpo(noticia, CAPTION_MAX),
-        "parse_mode": "MarkdownV2",
-    })
-    return ok
-
-
-def enviar_encabezado():
-    fecha = escapar_markdown(ahora_slrc().strftime("%d/%m/%Y"))
-    return enviar_mensaje(f"*SAN LUIS RIO COLORADO NOTICIAS*\n*Fecha:* {fecha}")
-
-
-def enviar_noticia(noticia):
-    """Estrategia: sendPhoto si hay og:image; si Telegram no puede descargar
-    esa imagen (403 del sitio, formato raro, >5 MB) degrada a sendMessage con
-    vista previa. Nunca se pierde la noticia por culpa de la imagen."""
-    imagen = noticia.get("imagen")
-
-    if MODO_IMAGEN == "foto" and imagen:
-        if enviar_foto(noticia):
-            log.info(f"Enviada con foto: {noticia['titulo']}")
-            return True
-        log.warning(f"sendPhoto falló para {imagen} · se degrada a texto")
-
-    if enviar_mensaje(_cuerpo(noticia, TEXTO_MAX)):
-        log.info(f"Enviada{' (sin imagen)' if not imagen else ''}: {noticia['titulo']}")
-        return True
-
-    log.warning(f"No se pudo enviar (reintento en próxima corrida): {noticia['titulo']}")
-    return False
+    guardar_enviada(noticia)
 
 
 # ========================
 # MAIN
 # ========================
-
 def main():
-    inicio = time.monotonic()
-    log.info(f"SLRC local: {ahora_slrc().strftime('%Y-%m-%d %H:%M:%S %Z')} · "
-             f"UTC: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}")
-    log.info(f"Config: DRY_RUN={DRY_RUN} VENTANA_HORAS={VENTANA_HORAS} "
-             f"MIN_LARGO_TITULO={MIN_LARGO_TITULO} UMBRAL={UMBRAL_SIMILITUD_TITULO}")
+    print("Buscando noticias...")
+    noticias = obtener_noticias()
 
-    if not DRY_RUN and not verificar_destino():
-        raise SystemExit(1)
+    nuevas = [n for n in noticias if not ya_fue_enviada(n)]
 
-    historial = Historial()
-    noticias = obtener_noticias(historial)[:MAX_NOTICIAS_POR_CORRIDA]
+    noticias_a_enviar = nuevas[:10]
 
-    if not noticias:
-        log.warning("Cero noticias candidatas. Revisa el embudo TOTAL para "
-                    "identificar la etapa que las descarta.")
-        if HEARTBEAT and not DRY_RUN:
-            enviar_mensaje(escapar_markdown(
-                f"[bot] Corrida {ahora_slrc().strftime('%d/%m %H:%M')}: sin noticias nuevas."))
-        return
-
-    log.info(f"{len(noticias)} noticias por publicar")
-
-    if DRY_RUN:
+    # Completar hasta 10 si faltan
+    if len(noticias_a_enviar) < 10:
         for n in noticias:
-            log.info(f"  [{n['fuente']}] {n['fecha'].strftime('%Y-%m-%d %H:%M')} · {n['titulo']}")
-            log.info(f"    link:   {n['link']}")
-            log.info(f"    imagen: {n.get('imagen') or 'NO DETECTADA'}")
-        return
+            if n not in noticias_a_enviar:
+                noticias_a_enviar.append(n)
+            if len(noticias_a_enviar) == 10:
+                break
 
-    enviar_encabezado()
-    time.sleep(3)
+    print(f"Enviando {len(noticias_a_enviar)} noticias...")
 
-    enviadas = fallidas = 0
-    for noticia in noticias:
-        if enviar_noticia(noticia):
-            historial.registrar(noticia)
-            enviadas += 1
-        else:
-            fallidas += 1
-        time.sleep(PAUSA_ENTRE_ENVIOS)
-
-    historial.persistir_si_hay_cambios()
-    log.info(f"Enviadas: {enviadas} | Fallidas: {fallidas} | "
-             f"Duración: {time.monotonic() - inicio:.1f}s")
+    for i, n in enumerate(noticias_a_enviar, 1):
+        enviar_noticia(n, i)
+        time.sleep(1)
 
 
 if __name__ == "__main__":
