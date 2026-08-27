@@ -1,7 +1,29 @@
 {
-  "ultima_ejecucion": null,
-  "ultimo_total_encontrado": 0,
-  "ultimo_total_enviado": 0,
-  "links": [],
-  "titulos": []
+  "ultima_ejecucion": "2026-08-27T09:56:08.799932-07:00",
+  "ultimo_total_encontrado": 10,
+  "ultimo_total_enviado": 10,
+  "links": [
+    "https://oem.com.mx/tribunadesanluis/local/ayuntamiento-de-san-luis-subastara-484-vehiculos-acumulados-en-la-yarda-municipal-31751455",
+    "https://oem.com.mx/tribunadesanluis/local/agentes-armados-de-cbp-ingresan-a-territorio-tohono-o-odham-en-plena-disputa-por-muro-fronterizo-31755745",
+    "https://oem.com.mx/tribunadesanluis/local/avanza-propuesta-de-identidad-geografica-del-datil-en-la-region-de-san-luis-31756164",
+    "https://oem.com.mx/tribunadesanluis/local/adulta-mayor-sorprende-al-meterse-a-farmear-aura-y-se-roba-las-miradas-en-el-parque-de-la-tortuga-31754732",
+    "https://oem.com.mx/tribunadesanluis/ciencia-y-salud/previene-imss-dengue-con-acciones-sencillas-para-evitar-su-propagacion-31754334",
+    "https://oem.com.mx/tribunadesanluis/local/cruces-por-garita-permanecen-sin-cambios-ante-anuncio-de-trump-de-suspender-citas-para-tramite-de-visa-31753231",
+    "https://oem.com.mx/tribunadesanluis/local/ambientalistas-piden-evitar-banarse-en-canales-ante-riesgo-de-amiba-de-vida-libre-31754633",
+    "https://oem.com.mx/tribunadesanluis/deportes/se-integran-dos-equipos-femeniles-al-baloncesto-de-la-liga-pitayo-park-31751962",
+    "https://oem.com.mx/tribunadesanluis/policiaca/hombre-de-29-anos-es-atacado-a-balazos-en-relleno-sanitario-buscan-al-responsable-31750085",
+    "https://oem.com.mx/tribunadesanluis/local/lluvia-o-calor-extremo-san-luis-rio-colorado-podria-alcanzar-los-46-c-este-miercoles-31749883"
+  ],
+  "titulos": [
+    "Avanza propuesta de identidad geográfica del dátil en la región de San Luis",
+    "Cruces por garita permanecen sin cambios ante anuncio de Trump de suspender citas para trámite de visa",
+    "Ambientalistas piden evitar bañarse en canales ante riesgo de amiba de vida libre",
+    "Adulta mayor sorprende al meterse a  “Farmear Aura” y se roba las miradas en el parque de la Tortuga",
+    "Previene IMSS dengue con acciones sencillas para evitar su propagación",
+    "¿Lluvia o calor extremo? San Luis Río Colorado podría alcanzar los 46°C este miércoles",
+    "Hombre de 29 años es atacado a balazos en relleno sanitario; buscan al responsable",
+    "Ayuntamiento de San Luis subastará 484 vehículos acumulados en la Yarda Municipal",
+    "Se integran dos equipos femeniles al baloncesto de la Liga Pitayo Park",
+    "Agentes armados de CBP ingresan a territorio Tohono O’odham en plena disputa por muro fronterizo"
+  ]
 }
