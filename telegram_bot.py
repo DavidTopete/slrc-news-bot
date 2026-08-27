@@ -1,30 +1,24 @@
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from urllib.parse import urljoin, urlparse
+import time
+import json
 import os
 import re
-import json
-import time
-import html
 import logging
-import unicodedata
-from datetime import datetime, timedelta
-from email.utils import parsedate_to_datetime
 from difflib import SequenceMatcher
-from urllib.parse import quote_plus
-from zoneinfo import ZoneInfo
-import xml.etree.ElementTree as ET
-
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 
-# ============================================================
-# CONFIGURACION
-# ============================================================
+# ---------------------------------------------------------------------------
+# Configuración
+# ---------------------------------------------------------------------------
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
 
 log = logging.getLogger("slrc_news_bot")
@@ -34,49 +28,42 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 ARCHIVO_ENVIADAS = "noticias_enviadas.json"
 
-# San Luis Rio Colorado / Sonora no usa horario de verano.
+# San Luis Río Colorado / Sonora = UTC-7 todo el año
 TZ = ZoneInfo("America/Hermosillo")
 
-# El bot corre una vez al dia a las 04:00.
-# Se revisan 30 horas para cubrir todo el dia anterior y dejar
-# un pequeno traslape. El historial evita volver a enviar noticias.
-VENTANA_HORAS = 30
+UMBRAL_SIMILITUD_TITULO = 0.80
+MAX_HISTORIAL = 1000
 
-MAX_NOTICIAS_POR_CORRIDA = 15
-MAX_HISTORIAL = 500
-UMBRAL_SIMILITUD_TITULO = 0.84
+# El bot corre a las 04:00 AM.
+# Se aceptan noticias de hoy y de ayer para no perder las publicadas
+# después de la ejecución anterior.
+ACEPTAR_HOY_Y_AYER = True
 
-# Google News RSS funciona mejor desde GitHub Actions que hacer scraping
-# directo de sitios que pueden bloquear robots/runners.
-CONSULTAS_GOOGLE_NEWS = [
-    '"San Luis Río Colorado" when:2d',
-    '"San Luis Rio Colorado" when:2d',
-    '"SLRC" Sonora when:2d',
-    '"Golfo de Santa Clara" when:2d',
-    '"Luis B. Sánchez" Sonora when:2d',
-    '"Luis B Sanchez" Sonora when:2d',
+FUENTES = [
+    {
+        "nombre": "Tribuna de San Luis",
+        "url": "https://oem.com.mx/tribunadesanluis/"
+    },
+    {
+        "nombre": "Tribuna de San Luis - Local",
+        "url": "https://oem.com.mx/tribunadesanluis/local/"
+    },
+    {
+        "nombre": "Tribuna de San Luis - Policiaca",
+        "url": "https://oem.com.mx/tribunadesanluis/policiaca/"
+    },
+    {
+        "nombre": "Tribuna de San Luis - Valle",
+        "url": "https://oem.com.mx/tribunadesanluis/tags/temas/valle"
+    },
+    {
+        "nombre": "El Imparcial SLRC",
+        "url": "https://www.elimparcial.com/sonora/sanluisriocolorado/"
+    }
 ]
 
-# Mantiene el enfoque original del bot.
-# Si mas adelante quieres aceptar otras fuentes, agrega nombres aqui.
-FUENTES_PERMITIDAS = (
-    "tribuna de san luis",
-    "el imparcial",
-)
-
-PALABRAS_LOCALES = (
-    "san luis rio colorado",
-    "san luis río colorado",
-    "slrc",
-    "san luis sonora",
-    "san luis r c",
-    "golfo de santa clara",
-    "luis b sanchez",
-    "luis b. sanchez",
-    "luis b sánchez",
-    "luis b. sánchez",
-    "valle de san luis",
-)
+# Máximo total que puede mandar por corrida.
+MAX_NOTICIAS_POR_CORRIDA = 10
 
 HEADERS = {
     "User-Agent": (
@@ -84,54 +71,24 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/151.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/rss+xml, application/xml, text/xml, */*",
-    "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+    "Accept-Language": "es-MX,es;q=0.9,en;q=0.8"
 }
 
 
-# ============================================================
-# HTTP
-# ============================================================
+# ---------------------------------------------------------------------------
+# Utilidades de texto
+# ---------------------------------------------------------------------------
 
-def crear_sesion():
-    retry = Retry(
-        total=4,
-        connect=4,
-        read=4,
-        status=4,
-        backoff_factor=1.0,
-        status_forcelist=(429, 500, 502, 503, 504),
-        allowed_methods=frozenset(["GET", "POST"]),
-        raise_on_status=False,
-    )
+def limpiar_texto(texto):
+    texto = str(texto or "").lower()
 
-    adapter = HTTPAdapter(max_retries=retry)
-
-    session = requests.Session()
-    session.headers.update(HEADERS)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-
-    return session
-
-
-SESSION = crear_sesion()
-
-
-# ============================================================
-# UTILIDADES
-# ============================================================
-
-def ahora_slrc():
-    return datetime.now(TZ)
-
-
-def normalizar_texto(texto):
-    texto = str(texto or "").strip().lower()
-
-    # Quita acentos para comparar sin problemas.
-    texto = unicodedata.normalize("NFKD", texto)
-    texto = "".join(c for c in texto if not unicodedata.combining(c))
+    texto = texto.replace("á", "a")
+    texto = texto.replace("é", "e")
+    texto = texto.replace("í", "i")
+    texto = texto.replace("ó", "o")
+    texto = texto.replace("ú", "u")
+    texto = texto.replace("ü", "u")
+    texto = texto.replace("ñ", "n")
 
     texto = re.sub(r"[^a-z0-9\s]", " ", texto)
     texto = re.sub(r"\s+", " ", texto).strip()
@@ -139,9 +96,18 @@ def normalizar_texto(texto):
     return texto
 
 
-def titulo_parecido(titulo_1, titulo_2):
-    a = normalizar_texto(titulo_1)
-    b = normalizar_texto(titulo_2)
+def escapar_html(texto):
+    texto = str(texto or "")
+    return (
+        texto.replace("&", "&amp;")
+             .replace("<", "&lt;")
+             .replace(">", "&gt;")
+    )
+
+
+def titulo_parecido(t1, t2):
+    a = limpiar_texto(t1)
+    b = limpiar_texto(t2)
 
     if not a or not b:
         return False
@@ -149,44 +115,9 @@ def titulo_parecido(titulo_1, titulo_2):
     return SequenceMatcher(None, a, b).ratio() >= UMBRAL_SIMILITUD_TITULO
 
 
-def quitar_fuente_del_titulo(titulo, fuente):
-    """
-    Google News suele devolver:
-        Titulo de la noticia - Tribuna de San Luis
-
-    Aqui se elimina el sufijo para guardar/comparar un titulo limpio.
-    """
-    titulo = (titulo or "").strip()
-    fuente = (fuente or "").strip()
-
-    if fuente:
-        sufijo = f" - {fuente}"
-        if titulo.lower().endswith(sufijo.lower()):
-            titulo = titulo[:-len(sufijo)].strip()
-
-    return titulo
-
-
-def fuente_permitida(fuente):
-    fuente_normalizada = normalizar_texto(fuente)
-    return any(
-        normalizar_texto(nombre) in fuente_normalizada
-        for nombre in FUENTES_PERMITIDAS
-    )
-
-
-def es_noticia_local(titulo):
-    texto = normalizar_texto(titulo)
-
-    return any(
-        normalizar_texto(clave) in texto
-        for clave in PALABRAS_LOCALES
-    )
-
-
-# ============================================================
-# HISTORIAL JSON
-# ============================================================
+# ---------------------------------------------------------------------------
+# Historial
+# ---------------------------------------------------------------------------
 
 def historial_vacio():
     return {
@@ -194,21 +125,20 @@ def historial_vacio():
         "ultimo_total_encontrado": 0,
         "ultimo_total_enviado": 0,
         "links": [],
-        "titulos": [],
+        "titulos": []
     }
 
 
-def cargar_historial():
+def cargar_enviadas():
     if not os.path.exists(ARCHIVO_ENVIADAS):
-        log.info("No existe historial. Se creara uno nuevo.")
         return historial_vacio()
 
     try:
-        with open(ARCHIVO_ENVIADAS, "r", encoding="utf-8") as archivo:
-            data = json.load(archivo)
+        with open(ARCHIVO_ENVIADAS, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
         if not isinstance(data, dict):
-            raise ValueError("El JSON no contiene un objeto valido.")
+            return historial_vacio()
 
         base = historial_vacio()
         base.update(data)
@@ -222,417 +152,651 @@ def cargar_historial():
         return base
 
     except Exception as error:
-        log.error(f"No se pudo leer {ARCHIVO_ENVIADAS}: {error}")
+        log.error(f"Error leyendo historial, se respalda y reinicia: {error}")
 
-        # No elimina el archivo defectuoso; lo respalda.
-        if os.path.exists(ARCHIVO_ENVIADAS):
+        try:
             respaldo = f"{ARCHIVO_ENVIADAS}.bak_{int(time.time())}"
-            try:
-                os.replace(ARCHIVO_ENVIADAS, respaldo)
-                log.warning(f"Historial defectuoso respaldado como: {respaldo}")
-            except OSError as error_respaldo:
-                log.error(f"No se pudo crear respaldo: {error_respaldo}")
+            os.replace(ARCHIVO_ENVIADAS, respaldo)
+            log.warning(f"Historial respaldado como {respaldo}")
+        except OSError:
+            pass
 
         return historial_vacio()
 
 
-def guardar_historial(historial):
-    """
-    Escritura atomica:
-    primero escribe un archivo temporal y luego lo reemplaza.
-    Asi se evita dejar un JSON incompleto si el proceso se interrumpe.
-    """
+def guardar_enviadas_en_disco(historial):
     historial["links"] = historial.get("links", [])[-MAX_HISTORIAL:]
     historial["titulos"] = historial.get("titulos", [])[-MAX_HISTORIAL:]
 
-    temporal = f"{ARCHIVO_ENVIADAS}.tmp"
+    temporal = ARCHIVO_ENVIADAS + ".tmp"
 
-    with open(temporal, "w", encoding="utf-8") as archivo:
-        json.dump(
-            historial,
-            archivo,
-            ensure_ascii=False,
-            indent=2,
-        )
-        archivo.write("\n")
+    with open(temporal, "w", encoding="utf-8") as f:
+        json.dump(historial, f, ensure_ascii=False, indent=2)
+        f.write("\n")
 
     os.replace(temporal, ARCHIVO_ENVIADAS)
 
-    log.info(
-        "Historial guardado: %s links / %s titulos",
-        len(historial["links"]),
-        len(historial["titulos"]),
-    )
 
+class Historial:
+    def __init__(self):
+        data = cargar_enviadas()
 
-def ya_fue_enviada(noticia, historial):
-    if noticia["link"] in historial["links"]:
-        return True
+        self.links = set(data["links"])
+        self.titulos = list(data["titulos"])
 
-    for titulo_guardado in historial["titulos"]:
-        if titulo_parecido(noticia["titulo"], titulo_guardado):
+        self.ultima_ejecucion = data.get("ultima_ejecucion")
+        self.ultimo_total_encontrado = data.get("ultimo_total_encontrado", 0)
+        self.ultimo_total_enviado = data.get("ultimo_total_enviado", 0)
+
+    def ya_fue_enviada(self, noticia):
+        if noticia["link"] in self.links:
             return True
 
-    return False
-
-
-def registrar_noticia(noticia, historial):
-    if noticia["link"] not in historial["links"]:
-        historial["links"].append(noticia["link"])
-
-    if noticia["titulo"] not in historial["titulos"]:
-        historial["titulos"].append(noticia["titulo"])
-
-
-# ============================================================
-# GOOGLE NEWS RSS
-# ============================================================
-
-def construir_url_google_news(consulta):
-    # hl = idioma
-    # gl = pais
-    # ceid = region/idioma
-    return (
-        "https://news.google.com/rss/search"
-        f"?q={quote_plus(consulta)}"
-        "&hl=es-419"
-        "&gl=MX"
-        "&ceid=MX:es-419"
-    )
-
-
-def parsear_fecha_rss(fecha_raw):
-    if not fecha_raw:
-        return None
-
-    try:
-        fecha = parsedate_to_datetime(fecha_raw)
-
-        if fecha.tzinfo is None:
-            fecha = fecha.replace(tzinfo=TZ)
-
-        return fecha.astimezone(TZ)
-
-    except Exception as error:
-        log.debug(f"No se pudo interpretar fecha RSS '{fecha_raw}': {error}")
-        return None
-
-
-def fecha_en_ventana(fecha):
-    if fecha is None:
-        return False
-
-    limite = ahora_slrc() - timedelta(hours=VENTANA_HORAS)
-
-    return limite <= fecha <= ahora_slrc() + timedelta(minutes=10)
-
-
-def leer_rss_google_news(consulta):
-    url = construir_url_google_news(consulta)
-
-    log.info(f"Consultando Google News: {consulta}")
-
-    try:
-        response = SESSION.get(url, timeout=25)
-
-        if response.status_code != 200:
-            log.warning(
-                "Google News respondio HTTP %s para consulta: %s",
-                response.status_code,
-                consulta,
+        return any(
+            titulo_parecido(
+                noticia["titulo"],
+                titulo_guardado
             )
-            return []
-
-        root = ET.fromstring(response.content)
-
-        noticias = []
-
-        for item in root.findall(".//item"):
-            titulo_raw = item.findtext("title", default="").strip()
-            link = item.findtext("link", default="").strip()
-            pub_date = item.findtext("pubDate", default="").strip()
-
-            source_tag = item.find("source")
-            fuente = ""
-
-            if source_tag is not None and source_tag.text:
-                fuente = source_tag.text.strip()
-
-            titulo = quitar_fuente_del_titulo(titulo_raw, fuente)
-            fecha = parsear_fecha_rss(pub_date)
-
-            if not titulo or not link:
-                continue
-
-            # Mantener solamente las fuentes originales del bot.
-            if not fuente_permitida(fuente):
-                continue
-
-            # La consulta ya es local, pero se hace un segundo filtro.
-            if not es_noticia_local(titulo):
-                continue
-
-            if not fecha_en_ventana(fecha):
-                continue
-
-            noticias.append(
-                {
-                    "titulo": titulo,
-                    "link": link,
-                    "fuente": fuente or "Fuente no identificada",
-                    "fecha": fecha,
-                }
-            )
-
-        log.info(
-            "Consulta '%s': %s noticias locales recientes",
-            consulta,
-            len(noticias),
+            for titulo_guardado in self.titulos
         )
 
-        return noticias
+    def registrar(self, noticia):
+        self.links.add(noticia["link"])
 
-    except ET.ParseError as error:
-        log.error(f"RSS XML invalido para '{consulta}': {error}")
-        return []
+        if noticia["titulo"] not in self.titulos:
+            self.titulos.append(noticia["titulo"])
 
-    except requests.RequestException as error:
-        log.error(f"Error de red consultando '{consulta}': {error}")
-        return []
+    def guardar(self, encontrados=None, enviados=None):
+        if encontrados is not None:
+            self.ultimo_total_encontrado = encontrados
 
-    except Exception as error:
-        log.exception(f"Error inesperado consultando '{consulta}': {error}")
-        return []
+        if enviados is not None:
+            self.ultimo_total_enviado = enviados
+
+        self.ultima_ejecucion = datetime.now(TZ).isoformat()
+
+        guardar_enviadas_en_disco({
+            "ultima_ejecucion": self.ultima_ejecucion,
+            "ultimo_total_encontrado": self.ultimo_total_encontrado,
+            "ultimo_total_enviado": self.ultimo_total_enviado,
+            "links": list(self.links),
+            "titulos": self.titulos
+        })
+
+        log.info(
+            f"Historial guardado: "
+            f"{len(self.links)} links, "
+            f"{len(self.titulos)} títulos"
+        )
 
 
-def eliminar_duplicados(noticias):
-    unicas = []
+# ---------------------------------------------------------------------------
+# Filtro geográfico: San Luis Río Colorado
+# ---------------------------------------------------------------------------
 
-    # Mas recientes primero.
-    noticias_ordenadas = sorted(
-        noticias,
-        key=lambda n: n.get("fecha") or datetime.min.replace(tzinfo=TZ),
-        reverse=True,
+def es_noticia_slrc(titulo, link):
+    texto = limpiar_texto(f"{titulo} {link}")
+
+    claves_slrc = [
+        "san luis rio colorado",
+        "slrc",
+        "san luis sonora",
+        "san luis r c",
+        "golfo de santa clara",
+        "luis b sanchez",
+        "valle de san luis",
+        "san luis"
+    ]
+
+    ciudades_excluidas = [
+        "hermosillo",
+        "nogales",
+        "guaymas",
+        "ciudad obregon",
+        "obregon",
+        "caborca",
+        "navojoa",
+        "cananea",
+        "agua prieta",
+        "puerto penasco",
+        "magdalena",
+        "sonoyta",
+        "tijuana",
+        "ensenada"
+    ]
+
+    # Si aparece otra ciudad y no hay referencia explícita a SLRC,
+    # se descarta.
+    for ciudad in ciudades_excluidas:
+        if ciudad in texto:
+            if (
+                "san luis rio colorado" not in texto
+                and "slrc" not in texto
+                and "golfo de santa clara" not in texto
+                and "luis b sanchez" not in texto
+            ):
+                return False
+
+    return any(clave in texto for clave in claves_slrc)
+
+
+# ---------------------------------------------------------------------------
+# Fechas
+# ---------------------------------------------------------------------------
+
+def convertir_fecha(fecha_texto):
+    if not fecha_texto:
+        return None
+
+    fecha_texto = str(fecha_texto).strip()
+
+    formatos = [
+        None,
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S.%f%z",
+        "%Y-%m-%d"
+    ]
+
+    for formato in formatos:
+        try:
+            texto = fecha_texto
+
+            if texto.endswith("Z"):
+                texto = texto[:-1] + "+00:00"
+
+            if formato is None:
+                fecha = datetime.fromisoformat(texto)
+            else:
+                fecha = datetime.strptime(texto, formato)
+
+            if fecha.tzinfo is None:
+                fecha = fecha.replace(tzinfo=TZ)
+
+            return fecha.astimezone(TZ)
+
+        except (ValueError, TypeError):
+            continue
+
+    return None
+
+
+def extraer_fecha_json_ld(soup):
+    scripts = soup.find_all("script", type="application/ld+json")
+
+    for script in scripts:
+        texto = script.get_text(" ", strip=True)
+
+        coincidencias = re.findall(
+            r'"datePublished"\s*:\s*"([^"]+)"',
+            texto
+        )
+
+        for fecha_texto in coincidencias:
+            fecha = convertir_fecha(fecha_texto)
+
+            if fecha:
+                return fecha
+
+    return None
+
+
+def obtener_fecha_articulo(link):
+    try:
+        r = requests.get(
+            link,
+            headers=HEADERS,
+            timeout=15,
+            allow_redirects=True
+        )
+
+        r.raise_for_status()
+
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        metas = [
+            {"property": "article:published_time"},
+            {"property": "article:modified_time"},
+            {"name": "date"},
+            {"name": "pubdate"},
+            {"name": "publishdate"},
+            {"name": "timestamp"},
+            {"itemprop": "datePublished"},
+            {"itemprop": "dateModified"}
+        ]
+
+        for meta_info in metas:
+            meta = soup.find("meta", attrs=meta_info)
+
+            if meta and meta.get("content"):
+                fecha = convertir_fecha(meta.get("content"))
+
+                if fecha:
+                    return fecha
+
+        fecha = extraer_fecha_json_ld(soup)
+
+        if fecha:
+            return fecha
+
+        return None
+
+    except requests.exceptions.RequestException as error:
+        log.warning(f"No se pudo obtener fecha de {link}: {error}")
+        return None
+
+
+def es_fecha_aceptable(noticia):
+    fecha = obtener_fecha_articulo(noticia["link"])
+
+    hoy = datetime.now(TZ).date()
+    ayer = hoy - timedelta(days=1)
+
+    if fecha:
+        noticia["fecha"] = fecha
+
+        if ACEPTAR_HOY_Y_AYER:
+            return fecha.date() in (hoy, ayer)
+
+        return fecha.date() == hoy
+
+    # Si no se puede detectar la fecha, se acepta.
+    # Es preferible que el historial evite duplicados a perder una noticia
+    # nueva porque el sitio cambió el formato de fecha.
+    log.info(
+        f"Sin fecha detectable, se incluye: {noticia['titulo']}"
     )
 
-    for noticia in noticias_ordenadas:
-        duplicada = False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Imagen / Open Graph
+# ---------------------------------------------------------------------------
+
+def obtener_og_image(link):
+    """
+    Detecta la imagen principal del artículo.
+
+    No es obligatorio usarla para el envío normal porque Telegram genera
+    automáticamente la vista previa a partir del URL. Se obtiene para
+    diagnóstico y como fallback opcional.
+    """
+    try:
+        r = requests.get(
+            link,
+            headers=HEADERS,
+            timeout=15,
+            allow_redirects=True
+        )
+
+        r.raise_for_status()
+
+        soup = BeautifulSoup(r.text, "html.parser")
+
+        meta = soup.find(
+            "meta",
+            attrs={"property": "og:image"}
+        )
+
+        if meta and meta.get("content"):
+            return urljoin(link, meta["content"].strip())
+
+        meta = soup.find(
+            "meta",
+            attrs={"name": "twitter:image"}
+        )
+
+        if meta and meta.get("content"):
+            return urljoin(link, meta["content"].strip())
+
+    except requests.exceptions.RequestException as error:
+        log.debug(f"No se pudo obtener og:image de {link}: {error}")
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Deduplicación
+# ---------------------------------------------------------------------------
+
+def eliminar_duplicados(lista):
+    unicas = []
+
+    for noticia in lista:
+        repetida = False
 
         for existente in unicas:
             if noticia["link"] == existente["link"]:
-                duplicada = True
+                repetida = True
                 break
 
-            if titulo_parecido(noticia["titulo"], existente["titulo"]):
-                duplicada = True
+            if titulo_parecido(
+                noticia["titulo"],
+                existente["titulo"]
+            ):
+                repetida = True
                 break
 
-        if not duplicada:
+        if not repetida:
             unicas.append(noticia)
 
     return unicas
 
 
+# ---------------------------------------------------------------------------
+# Scraping de fuentes
+# ---------------------------------------------------------------------------
+
+def construir_url_absoluta(base_url, href):
+    if not href:
+        return None
+
+    href = href.strip()
+
+    if href.startswith("javascript:"):
+        return None
+
+    if href.startswith("#"):
+        return None
+
+    return urljoin(base_url, href)
+
+
+def parece_articulo(link):
+    """
+    Evita links obvios de navegación, redes sociales, login, tags, etc.
+    """
+    if not link:
+        return False
+
+    url = limpiar_texto(link)
+
+    excluir = [
+        "facebook com",
+        "twitter com",
+        "x com",
+        "instagram com",
+        "youtube com",
+        "whatsapp",
+        "login",
+        "suscripcion",
+        "subscription",
+        "privacy",
+        "privacidad",
+        "terminos",
+        "contacto"
+    ]
+
+    return not any(x in url for x in excluir)
+
+
 def obtener_noticias(historial):
     candidatas = []
 
-    for consulta in CONSULTAS_GOOGLE_NEWS:
-        candidatas.extend(leer_rss_google_news(consulta))
-        time.sleep(0.5)
+    for fuente in FUENTES:
+        try:
+            log.info(f"Leyendo: {fuente['nombre']}")
 
+            r = requests.get(
+                fuente["url"],
+                headers=HEADERS,
+                timeout=15,
+                allow_redirects=True
+            )
+
+            r.raise_for_status()
+
+            soup = BeautifulSoup(r.text, "html.parser")
+            links = soup.find_all("a", href=True)
+
+            for posicion, item in enumerate(links):
+                titulo = item.get_text(" ", strip=True)
+                href = item.get("href", "").strip()
+
+                if not titulo or len(titulo) < 25:
+                    continue
+
+                link = construir_url_absoluta(
+                    fuente["url"],
+                    href
+                )
+
+                if not link:
+                    continue
+
+                if not parece_articulo(link):
+                    continue
+
+                if not es_noticia_slrc(titulo, link):
+                    continue
+
+                noticia = {
+                    "titulo": titulo,
+                    "link": link,
+                    "fuente": fuente["nombre"],
+                    "posicion": posicion
+                }
+
+                if historial.ya_fue_enviada(noticia):
+                    continue
+
+                candidatas.append(noticia)
+
+        except requests.exceptions.RequestException as error:
+            log.warning(
+                f"Error de red en {fuente['nombre']}: {error}"
+            )
+
+        except Exception as error:
+            log.exception(
+                f"Error inesperado en {fuente['nombre']}: {error}"
+            )
+
+    # Primero elimina repetidos entre secciones/fuentes.
     candidatas = eliminar_duplicados(candidatas)
 
-    nuevas = []
+    noticias_finales = []
 
     for noticia in candidatas:
-        if ya_fue_enviada(noticia, historial):
-            log.info(f"Ya enviada, se omite: {noticia['titulo']}")
-            continue
+        if es_fecha_aceptable(noticia):
+            noticia["imagen"] = obtener_og_image(noticia["link"])
+            noticias_finales.append(noticia)
 
-        nuevas.append(noticia)
+        if len(noticias_finales) >= MAX_NOTICIAS_POR_CORRIDA:
+            break
 
-    log.info(
-        "Resultado final: %s candidatas unicas / %s nuevas",
-        len(candidatas),
-        len(nuevas),
-    )
+        time.sleep(0.3)
 
-    return nuevas
+    return noticias_finales
 
 
-# ============================================================
-# TELEGRAM
-# ============================================================
+# ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
 
-def validar_telegram(response):
-    try:
-        data = response.json()
-    except ValueError:
+def validar_respuesta_telegram(response):
+    log.info(f"Telegram status: {response.status_code}")
+
+    if response.status_code != 200:
         log.error(
-            "Telegram devolvio una respuesta no JSON. HTTP %s: %s",
-            response.status_code,
-            response.text[:500],
+            f"Telegram respondió con error: {response.text}"
         )
         return False
 
-    if response.status_code != 200 or not data.get("ok"):
+    try:
+        payload = response.json()
+    except ValueError:
         log.error(
-            "Telegram rechazo el mensaje. HTTP %s: %s",
-            response.status_code,
-            data,
+            f"Telegram devolvió respuesta inválida: {response.text}"
         )
+        return False
+
+    if not payload.get("ok", False):
+        log.error(f"Telegram ok=false: {payload}")
         return False
 
     return True
 
 
-def enviar_mensaje_telegram(texto, preview=True):
+def enviar_mensaje(texto, mostrar_preview=False):
+    """
+    Envía texto por sendMessage.
+
+    Cuando mostrar_preview=True:
+      - disable_web_page_preview=False
+      - Telegram usa el URL del artículo para obtener og:title,
+        og:description y og:image.
+      - Esto produce la tarjeta con imagen preliminar como en el bot adjunto.
+    """
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
 
     try:
-        response = SESSION.post(
+        datos = {
+            "chat_id": CHAT_ID,
+            "text": texto,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": not mostrar_preview
+        }
+
+        response = requests.post(
             url,
-            data={
-                "chat_id": CHAT_ID,
-                "text": texto,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": not preview,
-            },
-            timeout=25,
+            data=datos,
+            timeout=25
         )
 
-        return validar_telegram(response)
+        return validar_respuesta_telegram(response)
 
-    except requests.RequestException as error:
-        log.error(f"Error de red enviando Telegram: {error}")
+    except requests.exceptions.RequestException as error:
+        log.error(
+            f"Excepción enviando a Telegram: {error}"
+        )
         return False
 
 
-def enviar_encabezado(total):
-    ahora = ahora_slrc()
-
-    mensaje = (
-        "<b>SAN LUIS RÍO COLORADO NOTICIAS</b>\n"
-        f"<b>Fecha:</b> {html.escape(ahora.strftime('%d/%m/%Y'))}\n"
-        f"<b>Noticias nuevas:</b> {total}"
-    )
-
-    return enviar_mensaje_telegram(mensaje, preview=False)
-
-
 def enviar_noticia(noticia):
-    titulo = html.escape(noticia["titulo"])
-    fuente = html.escape(noticia["fuente"])
-    link = html.escape(noticia["link"], quote=True)
+    titulo = escapar_html(noticia["titulo"])
+    fuente = escapar_html(noticia["fuente"])
 
-    fecha = noticia.get("fecha")
-    if fecha:
-        fecha_texto = fecha.astimezone(TZ).strftime("%d/%m/%Y %H:%M")
-    else:
-        fecha_texto = "Sin fecha"
+    # IMPORTANTE:
+    # Se deja el URL DIRECTO y visible dentro del mensaje.
+    # Telegram usa este URL para crear la vista previa con la imagen
+    # principal del artículo.
+    link = escapar_html(noticia["link"])
 
     mensaje = (
         f"<b>{titulo}</b>\n"
-        f"<b>Fuente:</b> {fuente}\n"
-        f"<b>Publicada:</b> {html.escape(fecha_texto)}\n"
-        f'<a href="{link}">Abrir noticia</a>'
+        f"Fuente: {fuente}\n"
+        f"Link: {link}"
     )
 
-    exito = enviar_mensaje_telegram(mensaje, preview=True)
+    enviado = enviar_mensaje(
+        mensaje,
+        mostrar_preview=True
+    )
 
-    if exito:
-        log.info(f"Enviada correctamente: {noticia['titulo']}")
-    else:
-        log.warning(f"NO enviada: {noticia['titulo']}")
+    if enviado:
+        if noticia.get("imagen"):
+            log.info(
+                f"Enviada con OG image detectada: {noticia['imagen']}"
+            )
+        else:
+            log.info(
+                "Enviada. Telegram intentará generar preview "
+                "directamente desde el artículo."
+            )
 
-    return exito
+    return enviado
 
 
-# ============================================================
-# MAIN
-# ============================================================
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     if not TOKEN:
-        raise RuntimeError(
-            "Falta el secret TOKEN. Configuralo en GitHub > Settings > "
-            "Secrets and variables > Actions."
-        )
+        log.error("Falta configurar TOKEN.")
+        return
 
     if not CHAT_ID:
-        raise RuntimeError(
-            "Falta el secret CHAT_ID. Configuralo en GitHub > Settings > "
-            "Secrets and variables > Actions."
-        )
+        log.error("Falta configurar CHAT_ID.")
+        return
 
-    log.info("=" * 60)
-    log.info("INICIO SLRC NEWS BOT")
-    log.info("Hora SLRC: %s", ahora_slrc().isoformat())
-    log.info("Ventana de busqueda: ultimas %s horas", VENTANA_HORAS)
-    log.info("=" * 60)
+    log.info(
+        "Buscando noticias nuevas de San Luis Río Colorado..."
+    )
 
-    historial = cargar_historial()
+    historial = Historial()
 
-    # IMPORTANTE:
-    # Se escribe el JSON aunque no haya noticias.
-    # Esto permite comprobar que el bot SI corrio.
-    historial["ultima_ejecucion"] = ahora_slrc().isoformat()
-    historial["ultimo_total_encontrado"] = 0
-    historial["ultimo_total_enviado"] = 0
-    guardar_historial(historial)
+    # Guardar desde el inicio confirma en GitHub que el bot sí corrió,
+    # incluso si no encuentra noticias.
+    historial.guardar(
+        encontrados=0,
+        enviados=0
+    )
 
-    noticias = obtener_noticias(historial)
-    noticias = noticias[:MAX_NOTICIAS_POR_CORRIDA]
+    noticias_a_enviar = obtener_noticias(historial)
 
-    historial["ultimo_total_encontrado"] = len(noticias)
-    guardar_historial(historial)
+    historial.guardar(
+        encontrados=len(noticias_a_enviar),
+        enviados=0
+    )
 
-    if not noticias:
+    if not noticias_a_enviar:
         log.info(
-            "No hay noticias nuevas dentro de las ultimas %s horas.",
-            VENTANA_HORAS,
+            "No hay noticias nuevas para publicar."
         )
         return
 
-    # El encabezado NO determina si se guarda una noticia.
-    if not enviar_encabezado(len(noticias)):
-        log.warning("No se pudo enviar el encabezado; se continuara con las noticias.")
+    ahora = datetime.now(TZ).strftime("%d/%m/%Y")
 
-    time.sleep(1)
+    encabezado = (
+        f"<b>SAN LUIS RÍO COLORADO NOTICIAS</b>\n"
+        f"<b>Fecha:</b> {ahora}"
+    )
 
-    enviadas = 0
-    fallidas = 0
+    # El encabezado no necesita preview.
+    enviar_mensaje(
+        encabezado,
+        mostrar_preview=False
+    )
 
-    for noticia in noticias:
-        if enviar_noticia(noticia):
-            registrar_noticia(noticia, historial)
-            enviadas += 1
+    time.sleep(2)
 
-            # Guardar INMEDIATAMENTE despues de cada envio exitoso.
-            # Si el workflow se corta a mitad, no se pierde el historial.
-            historial["ultimo_total_enviado"] = enviadas
-            guardar_historial(historial)
+    total_enviadas = 0
+    total_fallidas = 0
+
+    for noticia in noticias_a_enviar:
+        enviado = enviar_noticia(noticia)
+
+        if enviado:
+            historial.registrar(noticia)
+            total_enviadas += 1
+
+            # Guardar inmediatamente después de cada noticia enviada.
+            historial.guardar(
+                encontrados=len(noticias_a_enviar),
+                enviados=total_enviadas
+            )
         else:
-            fallidas += 1
+            total_fallidas += 1
+
+            log.warning(
+                "No se pudo enviar; se reintentará en próxima corrida: "
+                f"{noticia['titulo']}"
+            )
 
         time.sleep(1)
 
-    historial["ultima_ejecucion"] = ahora_slrc().isoformat()
-    historial["ultimo_total_encontrado"] = len(noticias)
-    historial["ultimo_total_enviado"] = enviadas
-    guardar_historial(historial)
+    historial.guardar(
+        encontrados=len(noticias_a_enviar),
+        enviados=total_enviadas
+    )
 
-    log.info("=" * 60)
-    log.info("FIN")
-    log.info("Encontradas: %s", len(noticias))
-    log.info("Enviadas: %s", enviadas)
-    log.info("Fallidas: %s", fallidas)
-    log.info("=" * 60)
+    log.info(
+        f"Total enviadas: {total_enviadas} | "
+        f"Total fallidas: {total_fallidas}"
+    )
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        log.exception("ERROR FATAL DEL BOT")
-        raise
+    main()
