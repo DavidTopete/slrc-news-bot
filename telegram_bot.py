@@ -2,7 +2,9 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
+from io import BytesIO
+from PIL import Image
 import time
 import json
 import os
@@ -28,17 +30,30 @@ CHAT_ID = os.getenv("CHAT_ID")
 
 ARCHIVO_ENVIADAS = "noticias_enviadas.json"
 
+# San Luis Río Colorado / Sonora
 TZ = ZoneInfo("America/Hermosillo")
 
 UMBRAL_SIMILITUD_TITULO = 0.80
 MAX_HISTORIAL = 1000
 MAX_NOTICIAS_POR_CORRIDA = 10
 
+# El bot corre una vez al día a las 04:00.
+# Se aceptan notas de hoy y ayer.
 ACEPTAR_HOY_Y_AYER = True
+
+# Tamaño máximo que intentaremos descargar como imagen.
+MAX_IMAGE_BYTES = 18 * 1024 * 1024
 
 
 # ============================================================
 # FUENTES
+# ============================================================
+#
+# IMPORTANTE:
+# El Imparcial ya publica la sección de San Luis bajo /mxl/sanluis/
+# y no bajo la URL antigua /sonora/sanluisriocolorado/.
+#
+# Tribuna se consulta mediante páginas que contienen noticias locales.
 # ============================================================
 
 FUENTES = [
@@ -55,15 +70,26 @@ FUENTES = [
         "url": "https://oem.com.mx/tribunadesanluis/policiaca/"
     },
     {
-        "nombre": "Tribuna de San Luis - Valle",
-        "url": "https://oem.com.mx/tribunadesanluis/tags/temas/valle"
+        "nombre": "Tribuna de San Luis - Deportes",
+        "url": "https://oem.com.mx/tribunadesanluis/deportes/"
     },
     {
-        "nombre": "El Imparcial SLRC",
-        "url": "https://www.elimparcial.com/sonora/sanluisriocolorado/"
+        "nombre": "Tribuna de San Luis - San Luis Río Colorado",
+        "url": (
+            "https://oem.com.mx/tribunadesanluis/"
+            "tags/temas/san-luis-rio-colorado/"
+        )
+    },
+    {
+        "nombre": "El Imparcial San Luis",
+        "url": "https://www.elimparcial.com/mxl/sanluis/"
     }
 ]
 
+
+# ============================================================
+# HEADERS Y SESIÓN
+# ============================================================
 
 HEADERS = {
     "User-Agent": (
@@ -71,8 +97,17 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/151.0.0.0 Safari/537.36"
     ),
-    "Accept-Language": "es-MX,es;q=0.9,en;q=0.8"
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,image/apng,*/*;q=0.8"
+    ),
+    "Accept-Language": "es-MX,es;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
 }
+
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
 
 
 # ============================================================
@@ -82,13 +117,18 @@ HEADERS = {
 def limpiar_texto(texto):
     texto = str(texto or "").lower()
 
-    texto = texto.replace("á", "a")
-    texto = texto.replace("é", "e")
-    texto = texto.replace("í", "i")
-    texto = texto.replace("ó", "o")
-    texto = texto.replace("ú", "u")
-    texto = texto.replace("ü", "u")
-    texto = texto.replace("ñ", "n")
+    reemplazos = {
+        "á": "a",
+        "é": "e",
+        "í": "i",
+        "ó": "o",
+        "ú": "u",
+        "ü": "u",
+        "ñ": "n"
+    }
+
+    for original, reemplazo in reemplazos.items():
+        texto = texto.replace(original, reemplazo)
 
     texto = re.sub(r"[^a-z0-9\s]", " ", texto)
     texto = re.sub(r"\s+", " ", texto).strip()
@@ -104,6 +144,7 @@ def escapar_html(texto):
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
+        .replace('"', "&quot;")
     )
 
 
@@ -114,13 +155,20 @@ def titulo_parecido(t1, t2):
     if not a or not b:
         return False
 
-    similitud = SequenceMatcher(
-        None,
-        a,
-        b
-    ).ratio()
+    return (
+        SequenceMatcher(None, a, b).ratio()
+        >= UMBRAL_SIMILITUD_TITULO
+    )
 
-    return similitud >= UMBRAL_SIMILITUD_TITULO
+
+def es_url_http(url):
+    return bool(
+        url
+        and (
+            url.startswith("http://")
+            or url.startswith("https://")
+        )
+    )
 
 
 # ============================================================
@@ -146,8 +194,8 @@ def cargar_enviadas():
             ARCHIVO_ENVIADAS,
             "r",
             encoding="utf-8"
-        ) as f:
-            data = json.load(f)
+        ) as archivo:
+            data = json.load(archivo)
 
         if not isinstance(data, dict):
             return historial_vacio()
@@ -204,16 +252,14 @@ def guardar_enviadas_en_disco(historial):
         temporal,
         "w",
         encoding="utf-8"
-    ) as f:
-
+    ) as archivo:
         json.dump(
             historial,
-            f,
+            archivo,
             ensure_ascii=False,
             indent=2
         )
-
-        f.write("\n")
+        archivo.write("\n")
 
     os.replace(
         temporal,
@@ -282,9 +328,7 @@ class Historial:
             self.ultimo_total_enviado = enviados
 
         self.ultima_ejecucion = (
-            datetime
-            .now(TZ)
-            .isoformat()
+            datetime.now(TZ).isoformat()
         )
 
         guardar_enviadas_en_disco({
@@ -320,15 +364,17 @@ def es_noticia_slrc(titulo, link):
         f"{titulo} {link}"
     )
 
-    claves_slrc = [
+    claves_locales = [
         "san luis rio colorado",
         "slrc",
-        "san luis sonora",
+        "san luis rc",
         "san luis r c",
+        "san luis sonora",
         "golfo de santa clara",
         "luis b sanchez",
         "valle de san luis",
-        "san luis"
+        "/sanluis/",
+        "tribunadesanluis"
     ]
 
     ciudades_excluidas = [
@@ -348,20 +394,22 @@ def es_noticia_slrc(titulo, link):
         "ensenada"
     ]
 
+    # Si el título menciona explícitamente otra ciudad,
+    # solo se acepta cuando también menciona claramente SLRC.
     for ciudad in ciudades_excluidas:
         if ciudad in texto:
-
             if (
                 "san luis rio colorado" not in texto
                 and "slrc" not in texto
+                and "san luis rc" not in texto
                 and "golfo de santa clara" not in texto
                 and "luis b sanchez" not in texto
             ):
                 return False
 
     return any(
-        clave in texto
-        for clave in claves_slrc
+        limpiar_texto(clave) in texto
+        for clave in claves_locales
     )
 
 
@@ -398,21 +446,57 @@ def convertir_fecha(fecha_texto):
     except (ValueError, TypeError):
         pass
 
-    try:
-        fecha = datetime.strptime(
-            fecha_texto,
-            "%Y-%m-%d"
+    formatos = [
+        "%Y-%m-%d",
+        "%d/%m/%Y"
+    ]
+
+    for formato in formatos:
+        try:
+            fecha = datetime.strptime(
+                fecha_texto,
+                formato
+            )
+
+            return fecha.replace(
+                tzinfo=TZ
+            )
+
+        except (ValueError, TypeError):
+            continue
+
+    return None
+
+
+def extraer_fecha_desde_soup(soup):
+    metas = [
+        {"property": "article:published_time"},
+        {"property": "article:modified_time"},
+        {"name": "date"},
+        {"name": "pubdate"},
+        {"name": "publishdate"},
+        {"name": "timestamp"},
+        {"itemprop": "datePublished"},
+        {"itemprop": "dateModified"}
+    ]
+
+    for meta_info in metas:
+        meta = soup.find(
+            "meta",
+            attrs=meta_info
         )
 
-        return fecha.replace(
-            tzinfo=TZ
-        )
+        if (
+            meta
+            and meta.get("content")
+        ):
+            fecha = convertir_fecha(
+                meta.get("content")
+            )
 
-    except (ValueError, TypeError):
-        return None
+            if fecha:
+                return fecha
 
-
-def extraer_fecha_json_ld(soup):
     scripts = soup.find_all(
         "script",
         type="application/ld+json"
@@ -440,230 +524,537 @@ def extraer_fecha_json_ld(soup):
     return None
 
 
-def obtener_fecha_articulo(link):
-    try:
-        r = requests.get(
-            link,
-            headers=HEADERS,
-            timeout=15,
-            allow_redirects=True
-        )
-
-        r.raise_for_status()
-
-        soup = BeautifulSoup(
-            r.text,
-            "html.parser"
-        )
-
-        metas = [
-            {"property": "article:published_time"},
-            {"property": "article:modified_time"},
-            {"name": "date"},
-            {"name": "pubdate"},
-            {"name": "publishdate"},
-            {"itemprop": "datePublished"}
-        ]
-
-        for meta_info in metas:
-            meta = soup.find(
-                "meta",
-                attrs=meta_info
-            )
-
-            if (
-                meta
-                and meta.get("content")
-            ):
-                fecha = convertir_fecha(
-                    meta.get("content")
-                )
-
-                if fecha:
-                    return fecha
-
-        fecha = extraer_fecha_json_ld(
-            soup
-        )
-
-        if fecha:
-            return fecha
-
-        return None
-
-    except requests.exceptions.RequestException as error:
-        log.warning(
-            f"No se pudo obtener fecha "
-            f"de {link}: {error}"
-        )
-
-        return None
-
-
-def es_fecha_aceptable(noticia):
-    fecha = obtener_fecha_articulo(
-        noticia["link"]
-    )
+def fecha_aceptable(fecha):
+    if not fecha:
+        # Si no se detecta la fecha, no se pierde la nota.
+        return True
 
     hoy = datetime.now(TZ).date()
     ayer = hoy - timedelta(days=1)
 
-    if fecha:
-        noticia["fecha"] = fecha
+    if ACEPTAR_HOY_Y_AYER:
+        return fecha.date() in (
+            hoy,
+            ayer
+        )
 
-        if ACEPTAR_HOY_Y_AYER:
-            return fecha.date() in (
-                hoy,
-                ayer
-            )
+    return fecha.date() == hoy
 
-        return fecha.date() == hoy
 
-    log.info(
-        "Sin fecha detectable, "
-        f"se incluye: {noticia['titulo']}"
+# ============================================================
+# IMAGEN DEL ARTÍCULO
+# ============================================================
+
+def obtener_meta_content(
+    soup,
+    property_name=None,
+    name=None,
+    itemprop=None
+):
+    attrs = {}
+
+    if property_name:
+        attrs["property"] = property_name
+
+    if name:
+        attrs["name"] = name
+
+    if itemprop:
+        attrs["itemprop"] = itemprop
+
+    meta = soup.find(
+        "meta",
+        attrs=attrs
     )
 
-    return True
+    if meta and meta.get("content"):
+        return meta.get("content").strip()
+
+    return None
+
+
+def extraer_imagen_json_ld(
+    soup,
+    article_url
+):
+    """
+    Busca URLs de imagen en JSON-LD.
+    Soporta:
+      "image": "https://..."
+      "image": ["https://..."]
+      "image": {"url": "https://..."}
+      "thumbnailUrl": "https://..."
+    """
+
+    scripts = soup.find_all(
+        "script",
+        type="application/ld+json"
+    )
+
+    patrones = [
+        r'"image"\s*:\s*"([^"]+)"',
+        r'"thumbnailUrl"\s*:\s*"([^"]+)"',
+        r'"image"\s*:\s*\[\s*"([^"]+)"',
+        r'"image"\s*:\s*\{[^{}]*?"url"\s*:\s*"([^"]+)"'
+    ]
+
+    for script in scripts:
+        texto = script.get_text(
+            " ",
+            strip=True
+        )
+
+        for patron in patrones:
+            match = re.search(
+                patron,
+                texto,
+                flags=re.I
+            )
+
+            if match:
+                valor = (
+                    match.group(1)
+                    .replace("\\/", "/")
+                )
+
+                return urljoin(
+                    article_url,
+                    valor
+                )
+
+    return None
+
+
+def escoger_de_srcset(
+    srcset,
+    article_url
+):
+    """
+    Elige la imagen con mayor descriptor de un srcset.
+    """
+
+    if not srcset:
+        return None
+
+    candidatos = []
+
+    for fragmento in srcset.split(","):
+        fragmento = fragmento.strip()
+
+        if not fragmento:
+            continue
+
+        partes = fragmento.split()
+
+        url = partes[0].strip()
+
+        peso = 0
+
+        if len(partes) > 1:
+            descriptor = partes[-1]
+
+            numeros = re.findall(
+                r"\d+",
+                descriptor
+            )
+
+            if numeros:
+                peso = int(
+                    numeros[0]
+                )
+
+        candidatos.append(
+            (
+                peso,
+                urljoin(
+                    article_url,
+                    url
+                )
+            )
+        )
+
+    if not candidatos:
+        return None
+
+    candidatos.sort(
+        key=lambda x: x[0],
+        reverse=True
+    )
+
+    return candidatos[0][1]
+
+
+def parece_imagen_util(url):
+    if not url:
+        return False
+
+    texto = limpiar_texto(url)
+
+    excluir = [
+        "logo",
+        "icon",
+        "avatar",
+        "sprite",
+        "favicon",
+        "placeholder",
+        "blank",
+        "ads",
+        "advert",
+        "pixel",
+        "tracking"
+    ]
+
+    return not any(
+        palabra in texto
+        for palabra in excluir
+    )
+
+
+def extraer_imagen_desde_soup(
+    soup,
+    article_url
+):
+    """
+    Orden de preferencia:
+      1) og:image
+      2) og:image:secure_url
+      3) twitter:image
+      4) twitter:image:src
+      5) itemprop=image
+      6) JSON-LD image/thumbnailUrl
+      7) imagen dentro de <article>
+      8) imagen general de la página
+    """
+
+    candidatos_meta = [
+        obtener_meta_content(
+            soup,
+            property_name="og:image"
+        ),
+        obtener_meta_content(
+            soup,
+            property_name="og:image:secure_url"
+        ),
+        obtener_meta_content(
+            soup,
+            name="twitter:image"
+        ),
+        obtener_meta_content(
+            soup,
+            name="twitter:image:src"
+        ),
+        obtener_meta_content(
+            soup,
+            itemprop="image"
+        )
+    ]
+
+    for candidato in candidatos_meta:
+        if candidato:
+            url = urljoin(
+                article_url,
+                candidato
+            )
+
+            if parece_imagen_util(url):
+                return url
+
+    json_ld = extraer_imagen_json_ld(
+        soup,
+        article_url
+    )
+
+    if (
+        json_ld
+        and parece_imagen_util(json_ld)
+    ):
+        return json_ld
+
+    # Primero buscamos dentro del artículo.
+    contenedores = []
+
+    article = soup.find("article")
+
+    if article:
+        contenedores.append(article)
+
+    main = soup.find("main")
+
+    if main:
+        contenedores.append(main)
+
+    # Al final se permite toda la página.
+    contenedores.append(soup)
+
+    atributos_directos = [
+        "data-src",
+        "data-lazy-src",
+        "data-original",
+        "data-url",
+        "src"
+    ]
+
+    for contenedor in contenedores:
+
+        imagenes = contenedor.find_all(
+            "img"
+        )
+
+        for img in imagenes:
+
+            # srcset / data-srcset primero, pues suelen contener
+            # la imagen de mayor resolución.
+            for atributo_srcset in [
+                "data-srcset",
+                "srcset"
+            ]:
+                srcset = img.get(
+                    atributo_srcset
+                )
+
+                url_srcset = escoger_de_srcset(
+                    srcset,
+                    article_url
+                )
+
+                if (
+                    url_srcset
+                    and parece_imagen_util(
+                        url_srcset
+                    )
+                ):
+                    return url_srcset
+
+            for atributo in atributos_directos:
+                valor = img.get(
+                    atributo
+                )
+
+                if not valor:
+                    continue
+
+                url = urljoin(
+                    article_url,
+                    valor.strip()
+                )
+
+                if parece_imagen_util(url):
+                    return url
+
+    return None
 
 
 # ============================================================
-# IMAGEN DE LA NOTICIA
+# DESCARGA Y NORMALIZACIÓN DE LA IMAGEN
 # ============================================================
 
-def obtener_og_image(link):
+def descargar_imagen(
+    image_url,
+    article_url
+):
+    """
+    Este es el cambio principal.
+
+    NO se le pide a Telegram que descargue la imagen del periódico.
+    El bot descarga la imagen con headers de navegador y Referer del artículo,
+    la convierte a JPEG en memoria y luego la SUBE a Telegram.
+
+    Esto evita problemas de:
+      - hotlink protection
+      - Telegram sin acceso a la imagen
+      - WebP/AVIF incompatibles
+      - cookies/headers requeridos por el medio
+    """
+
+    if not es_url_http(image_url):
+        return None
+
+    headers_imagen = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Accept": (
+            "image/avif,image/webp,image/apng,"
+            "image/svg+xml,image/*,*/*;q=0.8"
+        ),
+        "Accept-Language": HEADERS[
+            "Accept-Language"
+        ],
+        "Referer": article_url
+    }
+
     try:
-        r = requests.get(
+        response = SESSION.get(
+            image_url,
+            headers=headers_imagen,
+            timeout=25,
+            allow_redirects=True,
+            stream=True
+        )
+
+        response.raise_for_status()
+
+        contenido = bytearray()
+
+        for chunk in response.iter_content(
+            chunk_size=65536
+        ):
+            if not chunk:
+                continue
+
+            contenido.extend(chunk)
+
+            if len(contenido) > MAX_IMAGE_BYTES:
+                log.warning(
+                    "Imagen demasiado grande: "
+                    f"{image_url}"
+                )
+                return None
+
+        if not contenido:
+            return None
+
+        content_type = (
+            response.headers
+            .get("Content-Type", "")
+            .lower()
+        )
+
+        if (
+            content_type
+            and "image" not in content_type
+        ):
+            log.warning(
+                "La URL no devolvió una imagen: "
+                f"{image_url} "
+                f"Content-Type={content_type}"
+            )
+
+        # Convertimos cualquier formato que Pillow entienda
+        # a JPEG RGB. Así Telegram recibe siempre una foto estándar.
+        entrada = BytesIO(
+            bytes(contenido)
+        )
+
+        with Image.open(entrada) as imagen:
+            imagen.load()
+
+            # Corrige orientación EXIF cuando existe.
+            try:
+                from PIL import ImageOps
+                imagen = ImageOps.exif_transpose(
+                    imagen
+                )
+            except Exception:
+                pass
+
+            if imagen.mode not in (
+                "RGB",
+                "L"
+            ):
+                imagen = imagen.convert(
+                    "RGB"
+                )
+
+            elif imagen.mode == "L":
+                imagen = imagen.convert(
+                    "RGB"
+                )
+
+            salida = BytesIO()
+
+            imagen.save(
+                salida,
+                format="JPEG",
+                quality=90,
+                optimize=True
+            )
+
+            salida.seek(0)
+
+            log.info(
+                "Imagen descargada y convertida "
+                f"correctamente: {image_url}"
+            )
+
+            return salida
+
+    except Exception as error:
+        log.warning(
+            "No se pudo descargar/convertir imagen "
+            f"{image_url}: {error}"
+        )
+
+        return None
+
+
+# ============================================================
+# OBTENER METADATOS DEL ARTÍCULO
+# ============================================================
+
+def obtener_metadatos_articulo(
+    noticia
+):
+    """
+    Descarga una sola vez el HTML del artículo y extrae:
+      - fecha
+      - imagen principal
+    """
+
+    link = noticia["link"]
+
+    try:
+        response = SESSION.get(
             link,
-            headers=HEADERS,
-            timeout=15,
+            timeout=20,
             allow_redirects=True
         )
 
-        r.raise_for_status()
+        response.raise_for_status()
+
+        # Guardamos la URL final tras redirecciones.
+        noticia["link"] = response.url
 
         soup = BeautifulSoup(
-            r.text,
+            response.text,
             "html.parser"
         )
 
-        # ----------------------------------------------------
-        # 1. og:image
-        # ----------------------------------------------------
-
-        meta = soup.find(
-            "meta",
-            attrs={
-                "property": "og:image"
-            }
+        noticia["fecha"] = (
+            extraer_fecha_desde_soup(
+                soup
+            )
         )
 
-        if (
-            meta
-            and meta.get("content")
-        ):
-            imagen = urljoin(
-                link,
-                meta["content"].strip()
+        noticia["imagen"] = (
+            extraer_imagen_desde_soup(
+                soup,
+                response.url
             )
+        )
 
+        if noticia["imagen"]:
             log.info(
-                f"og:image encontrada: {imagen}"
+                "Imagen detectada para "
+                f"'{noticia['titulo']}': "
+                f"{noticia['imagen']}"
+            )
+        else:
+            log.warning(
+                "No se detectó imagen en: "
+                f"{noticia['titulo']}"
             )
 
-            return imagen
-
-        # ----------------------------------------------------
-        # 2. og:image:secure_url
-        # ----------------------------------------------------
-
-        meta = soup.find(
-            "meta",
-            attrs={
-                "property":
-                    "og:image:secure_url"
-            }
-        )
-
-        if (
-            meta
-            and meta.get("content")
-        ):
-            imagen = urljoin(
-                link,
-                meta["content"].strip()
-            )
-
-            log.info(
-                f"og:image:secure_url encontrada: {imagen}"
-            )
-
-            return imagen
-
-        # ----------------------------------------------------
-        # 3. twitter:image
-        # ----------------------------------------------------
-
-        meta = soup.find(
-            "meta",
-            attrs={
-                "name": "twitter:image"
-            }
-        )
-
-        if (
-            meta
-            and meta.get("content")
-        ):
-            imagen = urljoin(
-                link,
-                meta["content"].strip()
-            )
-
-            log.info(
-                f"twitter:image encontrada: {imagen}"
-            )
-
-            return imagen
-
-        # ----------------------------------------------------
-        # 4. twitter:image:src
-        # ----------------------------------------------------
-
-        meta = soup.find(
-            "meta",
-            attrs={
-                "name":
-                    "twitter:image:src"
-            }
-        )
-
-        if (
-            meta
-            and meta.get("content")
-        ):
-            imagen = urljoin(
-                link,
-                meta["content"].strip()
-            )
-
-            log.info(
-                f"twitter:image:src encontrada: {imagen}"
-            )
-
-            return imagen
-
-        log.warning(
-            f"No se encontró imagen social para: {link}"
-        )
+        return True
 
     except requests.exceptions.RequestException as error:
         log.warning(
-            f"No se pudo obtener imagen "
-            f"de {link}: {error}"
+            "No se pudo abrir artículo "
+            f"{link}: {error}"
         )
 
-    return None
+        noticia["fecha"] = None
+        noticia["imagen"] = None
+
+        return False
 
 
 # ============================================================
@@ -677,8 +1068,10 @@ def eliminar_duplicados(lista):
         repetida = False
 
         for existente in unicas:
-
-            if noticia["link"] == existente["link"]:
+            if (
+                noticia["link"]
+                == existente["link"]
+            ):
                 repetida = True
                 break
 
@@ -698,7 +1091,7 @@ def eliminar_duplicados(lista):
 
 
 # ============================================================
-# SCRAPING
+# SCRAPING DE FUENTES
 # ============================================================
 
 def construir_url_absoluta(
@@ -710,7 +1103,9 @@ def construir_url_absoluta(
 
     href = href.strip()
 
-    if href.startswith("javascript:"):
+    if href.startswith(
+        "javascript:"
+    ):
         return None
 
     if href.startswith("#"):
@@ -726,30 +1121,63 @@ def parece_articulo(link):
     if not link:
         return False
 
-    url = limpiar_texto(link)
+    parsed = urlparse(link)
+
+    path = parsed.path.lower()
 
     excluir = [
-        "facebook com",
-        "twitter com",
-        "instagram com",
-        "youtube com",
-        "whatsapp",
-        "login",
-        "suscripcion",
-        "subscription",
-        "privacy",
-        "privacidad",
-        "terminos",
-        "contacto"
+        "/facebook",
+        "/twitter",
+        "/instagram",
+        "/youtube",
+        "/login",
+        "/suscripcion",
+        "/subscription",
+        "/privacy",
+        "/privacidad",
+        "/terminos",
+        "/contacto"
     ]
 
-    return not any(
-        palabra in url
-        for palabra in excluir
-    )
+    if any(
+        x in path
+        for x in excluir
+    ):
+        return False
+
+    # Para Tribuna, los artículos terminan normalmente en un ID numérico.
+    if "oem.com.mx/tribunadesanluis" in link:
+        if re.search(
+            r"-\d{6,}$",
+            path.rstrip("/")
+        ):
+            return True
+
+        return False
+
+    # Para El Imparcial, las notas de San Luis usan /mxl/sanluis/YYYY/MM/DD/...
+    if "elimparcial.com" in link:
+        if re.search(
+            r"/mxl/sanluis/\d{4}/\d{2}/\d{2}/",
+            path
+        ):
+            return True
+
+        # También aceptamos algunas notas de Sonora que mencionan SLRC.
+        if re.search(
+            r"/son/sonora/\d{4}/\d{2}/\d{2}/",
+            path
+        ):
+            return True
+
+        return False
+
+    return False
 
 
-def obtener_noticias(historial):
+def obtener_noticias(
+    historial
+):
     candidatas = []
 
     for fuente in FUENTES:
@@ -760,17 +1188,21 @@ def obtener_noticias(historial):
                 f"{fuente['nombre']}"
             )
 
-            r = requests.get(
+            response = SESSION.get(
                 fuente["url"],
-                headers=HEADERS,
-                timeout=15,
+                timeout=20,
                 allow_redirects=True
             )
 
-            r.raise_for_status()
+            if response.status_code != 200:
+                log.warning(
+                    f"{fuente['nombre']} respondió "
+                    f"HTTP {response.status_code}"
+                )
+                continue
 
             soup = BeautifulSoup(
-                r.text,
+                response.text,
                 "html.parser"
             )
 
@@ -779,8 +1211,9 @@ def obtener_noticias(historial):
                 href=True
             )
 
-            for posicion, item in enumerate(links):
-
+            for posicion, item in enumerate(
+                links
+            ):
                 titulo = item.get_text(
                     " ",
                     strip=True
@@ -793,19 +1226,21 @@ def obtener_noticias(historial):
 
                 if (
                     not titulo
-                    or len(titulo) < 25
+                    or len(titulo) < 20
                 ):
                     continue
 
                 link = construir_url_absoluta(
-                    fuente["url"],
+                    response.url,
                     href
                 )
 
                 if not link:
                     continue
 
-                if not parece_articulo(link):
+                if not parece_articulo(
+                    link
+                ):
                     continue
 
                 if not es_noticia_slrc(
@@ -817,17 +1252,15 @@ def obtener_noticias(historial):
                 noticia = {
                     "titulo": titulo,
                     "link": link,
-                    "fuente": fuente["nombre"],
-                    "posicion": posicion
+                    "fuente":
+                        fuente["nombre"],
+                    "posicion":
+                        posicion
                 }
 
                 if historial.ya_fue_enviada(
                     noticia
                 ):
-                    log.info(
-                        "Repetida, se omite: "
-                        f"{titulo}"
-                    )
                     continue
 
                 candidatas.append(
@@ -852,22 +1285,31 @@ def obtener_noticias(historial):
         candidatas
     )
 
+    log.info(
+        f"Candidatas únicas antes de fecha: "
+        f"{len(candidatas)}"
+    )
+
     noticias_finales = []
 
     for noticia in candidatas:
 
-        if es_fecha_aceptable(
+        obtener_metadatos_articulo(
             noticia
-        ):
-            noticia["imagen"] = (
-                obtener_og_image(
-                    noticia["link"]
-                )
-            )
+        )
 
-            noticias_finales.append(
-                noticia
+        if not fecha_aceptable(
+            noticia.get("fecha")
+        ):
+            log.info(
+                "Ignorada por fecha: "
+                f"{noticia['titulo']}"
             )
+            continue
+
+        noticias_finales.append(
+            noticia
+        )
 
         if (
             len(noticias_finales)
@@ -884,35 +1326,32 @@ def obtener_noticias(historial):
 # TELEGRAM
 # ============================================================
 
-def validar_respuesta_telegram(response):
+def validar_respuesta_telegram(
+    response
+):
     log.info(
         f"Telegram status: "
         f"{response.status_code}"
     )
 
-    if response.status_code != 200:
-        log.error(
-            "Telegram respondió "
-            f"con error: {response.text}"
-        )
-        return False
-
     try:
         payload = response.json()
-
     except ValueError:
         log.error(
-            "Telegram devolvió "
-            "respuesta inválida."
+            "Telegram devolvió respuesta no JSON: "
+            f"{response.text[:500]}"
         )
         return False
 
-    if not payload.get(
-        "ok",
-        False
+    if (
+        response.status_code != 200
+        or not payload.get(
+            "ok",
+            False
+        )
     ):
         log.error(
-            f"Telegram ok=false: "
+            "Telegram rechazó el mensaje: "
             f"{payload}"
         )
         return False
@@ -930,18 +1369,16 @@ def enviar_mensaje(
     )
 
     try:
-        datos = {
-            "chat_id": CHAT_ID,
-            "text": texto,
-            "parse_mode": "HTML",
-            "disable_web_page_preview":
-                not mostrar_preview
-        }
-
         response = requests.post(
             url,
-            data=datos,
-            timeout=25
+            data={
+                "chat_id": CHAT_ID,
+                "text": texto,
+                "parse_mode": "HTML",
+                "disable_web_page_preview":
+                    not mostrar_preview
+            },
+            timeout=30
         )
 
         return validar_respuesta_telegram(
@@ -950,28 +1387,19 @@ def enviar_mensaje(
 
     except requests.exceptions.RequestException as error:
         log.error(
-            "Excepción enviando "
-            f"a Telegram: {error}"
+            f"Error enviando mensaje: {error}"
         )
-
         return False
 
 
-# ============================================================
-# ENVIAR FOTO
-# ============================================================
-
-def enviar_foto(noticia):
+def enviar_foto_subida(
+    noticia,
+    imagen_jpeg
+):
     """
-    Envía directamente la imagen de la noticia usando sendPhoto.
-
-    Telegram descarga la URL de imagen y la muestra como fotografía.
+    SUBE la imagen a Telegram mediante multipart/form-data.
+    Telegram ya no necesita entrar al sitio del periódico.
     """
-
-    imagen = noticia.get("imagen")
-
-    if not imagen:
-        return False
 
     titulo = escapar_html(
         noticia["titulo"]
@@ -997,64 +1425,77 @@ def enviar_foto(noticia):
     )
 
     try:
-
-        datos = {
-            "chat_id": CHAT_ID,
-            "photo": imagen,
-            "caption": caption,
-            "parse_mode": "HTML"
-        }
+        imagen_jpeg.seek(0)
 
         response = requests.post(
             url,
-            data=datos,
-            timeout=30
+            data={
+                "chat_id": CHAT_ID,
+                "caption": caption,
+                "parse_mode": "HTML"
+            },
+            files={
+                "photo": (
+                    "noticia.jpg",
+                    imagen_jpeg,
+                    "image/jpeg"
+                )
+            },
+            timeout=60
         )
 
         if validar_respuesta_telegram(
             response
         ):
             log.info(
-                "Imagen enviada correctamente: "
-                f"{imagen}"
+                "Foto SUBIDA correctamente "
+                f"para: {noticia['titulo']}"
             )
             return True
-
-        log.warning(
-            "sendPhoto falló. "
-            "Se intentará preview normal."
-        )
 
         return False
 
     except requests.exceptions.RequestException as error:
-
-        log.warning(
-            "Error enviando imagen: "
+        log.error(
+            "Error subiendo foto a Telegram: "
             f"{error}"
         )
-
         return False
 
 
-# ============================================================
-# ENVIAR NOTICIA
-# ============================================================
+def enviar_noticia(
+    noticia
+):
+    """
+    Estrategia:
+      1) Si detectamos imagen, el bot la descarga.
+      2) La convierte a JPEG.
+      3) La SUBE directamente a Telegram.
+      4) Si algo falla, manda mensaje con preview como respaldo.
+    """
 
-def enviar_noticia(noticia):
+    image_url = noticia.get(
+        "imagen"
+    )
 
-    # --------------------------------------------------------
-    # 1. Si existe imagen, intentar sendPhoto
-    # --------------------------------------------------------
+    if image_url:
+        imagen_jpeg = descargar_imagen(
+            image_url,
+            noticia["link"]
+        )
 
-    if noticia.get("imagen"):
+        if imagen_jpeg:
+            if enviar_foto_subida(
+                noticia,
+                imagen_jpeg
+            ):
+                return True
 
-        if enviar_foto(noticia):
-            return True
-
-    # --------------------------------------------------------
-    # 2. Fallback: mensaje normal con preview
-    # --------------------------------------------------------
+    # Fallback cuando no se pudo encontrar/descargar/subir imagen.
+    log.warning(
+        "Usando fallback de preview para: "
+        f"{noticia['titulo']}"
+    )
 
     titulo = escapar_html(
         noticia["titulo"]
@@ -1074,11 +1515,6 @@ def enviar_noticia(noticia):
         f"Link: {link}"
     )
 
-    log.info(
-        "Usando fallback con "
-        "vista previa automática de Telegram."
-    )
-
     return enviar_mensaje(
         mensaje,
         mostrar_preview=True
@@ -1090,7 +1526,6 @@ def enviar_noticia(noticia):
 # ============================================================
 
 def main():
-
     if not TOKEN:
         log.error(
             "Falta configurar TOKEN."
@@ -1110,14 +1545,16 @@ def main():
 
     historial = Historial()
 
-    # Registrar ejecución aunque no haya noticias
+    # Registrar ejecución aunque no haya noticias.
     historial.guardar(
         encontrados=0,
         enviados=0
     )
 
-    noticias_a_enviar = obtener_noticias(
-        historial
+    noticias_a_enviar = (
+        obtener_noticias(
+            historial
+        )
     )
 
     historial.guardar(
@@ -1157,7 +1594,7 @@ def main():
     time.sleep(2)
 
     # ========================================================
-    # ENVIAR NOTICIAS
+    # NOTICIAS
     # ========================================================
 
     total_enviadas = 0
@@ -1170,13 +1607,13 @@ def main():
         )
 
         if enviado:
-
             historial.registrar(
                 noticia
             )
 
             total_enviadas += 1
 
+            # Guardar inmediatamente.
             historial.guardar(
                 encontrados=len(
                     noticias_a_enviar
@@ -1185,7 +1622,6 @@ def main():
             )
 
         else:
-
             total_fallidas += 1
 
             log.warning(
@@ -1195,10 +1631,6 @@ def main():
             )
 
         time.sleep(1)
-
-    # ========================================================
-    # GUARDADO FINAL
-    # ========================================================
 
     historial.guardar(
         encontrados=len(
