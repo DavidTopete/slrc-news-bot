@@ -5,7 +5,7 @@ on:
     # 04:00 AM San Luis Río Colorado (UTC-7) = 11:00 UTC
     - cron: '0 11 * * *'
 
-  # Permite ejecutarlo manualmente desde GitHub Actions
+  # Permite ejecutar manualmente desde GitHub Actions
   workflow_dispatch:
 
 permissions:
@@ -20,42 +20,52 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ------------------------------------------------------
-      # 1. Descargar repositorio
-      # ------------------------------------------------------
+
+      # ======================================================
+      # 1. DESCARGAR REPOSITORIO
+      # ======================================================
+
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ------------------------------------------------------
-      # 2. Instalar Python
-      # ------------------------------------------------------
+
+      # ======================================================
+      # 2. CONFIGURAR PYTHON
+      # ======================================================
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # ------------------------------------------------------
-      # 3. Instalar dependencias
-      # ------------------------------------------------------
+
+      # ======================================================
+      # 3. INSTALAR DEPENDENCIAS
+      # ======================================================
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4
+          pip install requests beautifulsoup4 pillow
 
-      # ------------------------------------------------------
-      # 4. Ejecutar bot
-      # ------------------------------------------------------
+
+      # ======================================================
+      # 4. EJECUTAR BOT
+      # ======================================================
+
       - name: Run bot
         run: python telegram_bot.py
         env:
           TOKEN: ${{ secrets.TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
 
-      # ------------------------------------------------------
-      # 5. Guardar historial de noticias enviadas
-      # ------------------------------------------------------
+
+      # ======================================================
+      # 5. GUARDAR HISTORIAL
+      # ======================================================
+
       - name: Save bot history
         run: |
           git config user.name "github-actions[bot]"
