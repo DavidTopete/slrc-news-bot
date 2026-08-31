@@ -2,10 +2,10 @@ name: Run SLRC News Bot
 
 on:
   schedule:
-    # 04:07 AM San Luis Río Colorado (UTC-7) = 11:07 UTC
-    # Se usa :07 para evitar la alta carga de GitHub Actions
-    # que normalmente ocurre al inicio de cada hora.
-    - cron: '7 11 * * *'
+    # 04:17 AM San Luis Río Colorado (UTC-7) = 11:17 UTC
+    # Se usa :17 para reducir retrasos de GitHub Actions
+    # que suelen ocurrir al inicio de cada hora.
+    - cron: '17 11 * * *'
 
   # Permite ejecutar manualmente desde GitHub Actions
   workflow_dispatch:
@@ -26,7 +26,6 @@ jobs:
       # ======================================================
       # 1. DESCARGAR REPOSITORIO
       # ======================================================
-
       - name: Checkout repo
         uses: actions/checkout@v4
         with:
@@ -36,7 +35,6 @@ jobs:
       # ======================================================
       # 2. CONFIGURAR PYTHON
       # ======================================================
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -44,9 +42,24 @@ jobs:
 
 
       # ======================================================
-      # 3. INSTALAR DEPENDENCIAS
+      # 3. MOSTRAR HORA DE EJECUCIÓN
       # ======================================================
+      - name: Show execution time
+        run: |
+          echo "========================================"
+          echo "SLRC News Bot"
+          echo "========================================"
+          echo "UTC time:"
+          date -u
+          echo ""
+          echo "Runner time:"
+          date
+          echo "========================================"
 
+
+      # ======================================================
+      # 4. INSTALAR DEPENDENCIAS
+      # ======================================================
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -54,10 +67,9 @@ jobs:
 
 
       # ======================================================
-      # 4. EJECUTAR BOT
+      # 5. EJECUTAR BOT
       # ======================================================
-
-      - name: Run bot
+      - name: Run SLRC News Bot
         run: python telegram_bot.py
         env:
           TOKEN: ${{ secrets.TOKEN }}
@@ -65,13 +77,14 @@ jobs:
 
 
       # ======================================================
-      # 5. GUARDAR HISTORIAL
+      # 6. GUARDAR HISTORIAL
       # ======================================================
-
       - name: Save bot history
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          echo "Checking noticias_enviadas.json..."
 
           git add noticias_enviadas.json
 
@@ -80,8 +93,14 @@ jobs:
             exit 0
           fi
 
+          echo "Changes detected."
+
           git commit -m "Update noticias_enviadas.json"
 
+          echo "Updating local repository..."
           git pull --rebase origin main
 
+          echo "Pushing updated history..."
           git push origin HEAD:main
+
+          echo "Bot history successfully updated."
